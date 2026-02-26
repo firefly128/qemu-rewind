@@ -1,6 +1,6 @@
 # Solaris 7 SPARC Patches for QEMU
 
-This fork of QEMU includes 9 patches that enable Solaris 7 to run on emulated
+This fork of QEMU includes 10 patches that enable Solaris 7 to run on emulated
 SPARCstation hardware using real Sun OBP firmware (ss4.bin). These patches are
 required — stock QEMU cannot boot or install Solaris 7 on SS-4.
 
@@ -12,6 +12,7 @@ required — stock QEMU cannot boot or install Solaris 7 on SS-4.
 | `hw/scsi/scsi-disk.c` | MODE SENSE page 3 handler, rotation rate in pages 4 & 5 |
 | `hw/sparc/sun4m.c` | TCX VRAM 2MB, AFX base address, NMI support, NVRAM persistence |
 | `hw/misc/slavio_misc.c` | diag-switch OFF by default |
+| `hw/char/escc.c` | BREAK interrupt storm fix, NUL byte on BREAK |
 
 ## Patch Details
 
@@ -87,6 +88,25 @@ variables (`boot-device`, `auto-boot?`, etc.) across QEMU restarts.
 
 The IDPROM region (`0x1FD8–0x1FEF`) is always written by QEMU and is not
 saved/loaded.
+
+### 10. ESCC BREAK Fix
+
+Fixes an infinite interrupt storm triggered by sending a serial BREAK to the
+ESCC (Z8530) UART. Two issues in stock QEMU:
+
+1. **Missing Reset Ext/Status command (WR0 = 0x10):** The Z8530's "Reset
+   Ext/Status Interrupts" command was not implemented. When the Solaris kernel
+   handles a BREAK interrupt, it writes 0x10 to WR0 to clear the latched
+   status. Without this, `STATUS_BRK` is never cleared and the interrupt fires
+   endlessly, hanging the system.
+
+2. **Missing NUL byte on BREAK:** A real Z8530 delivers a NUL (0x00) byte into
+   the receive buffer when BREAK is detected. The Solaris `zs` driver expects
+   this — it reads the data register as part of BREAK handling. Without it,
+   the driver's state machine gets confused.
+
+With this patch, serial BREAK cleanly drops to the OBP `ok` prompt (Stop-A
+equivalent) and the system can resume with `go`.
 
 ## Applying Patches
 

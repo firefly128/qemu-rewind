@@ -559,6 +559,17 @@ static void escc_mem_write(void *opaque, hwaddr addr,
             case CMD_HI:
                 newreg |= CMD_HI;
                 break;
+            case 0x10:
+                /*
+                 * Reset Ext/Status Interrupts (Z8530 WR0 command 010).
+                 * Clears latched external/status conditions (BREAK detect,
+                 * TX underrun) so the interrupt can be re-armed.  Without
+                 * this, a serial BREAK causes an infinite interrupt storm
+                 * because STATUS_BRK is never cleared.
+                 */
+                s->rregs[R_STATUS] &= ~(STATUS_BRK | STATUS_TXUNDRN);
+                escc_update_irq(s);
+                break;
             case CMD_CLR_TXINT:
                 clr_txint(s);
                 break;
@@ -746,6 +757,7 @@ static void serial_receive_byte(ESCCChannelState *s, int ch)
 static void serial_receive_break(ESCCChannelState *s)
 {
     s->rregs[R_STATUS] |= STATUS_BRK;
+    serial_receive_byte(s, 0);  /* Real Z8530 delivers NUL on BREAK */
     escc_update_irq(s);
 }
 

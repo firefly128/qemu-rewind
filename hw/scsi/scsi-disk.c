@@ -1132,6 +1132,7 @@ static int mode_sense_page(SCSIDiskState *s, int page, uint8_t **p_outbuf,
 {
     static const int mode_sense_valid[0x3f] = {
         [MODE_PAGE_VENDOR_SPECIFIC]        = (1 << TYPE_DISK) | (1 << TYPE_ROM),
+        [MODE_PAGE_FORMAT_DEVICE]          = (1 << TYPE_DISK),
         [MODE_PAGE_HD_GEOMETRY]            = (1 << TYPE_DISK),
         [MODE_PAGE_FLEXIBLE_DISK_GEOMETRY] = (1 << TYPE_DISK),
         [MODE_PAGE_CACHING]                = (1 << TYPE_DISK) | (1 << TYPE_ROM),
@@ -1162,6 +1163,22 @@ static int mode_sense_page(SCSIDiskState *s, int page, uint8_t **p_outbuf,
      * 2-byte and 4-byte headers.
      */
     switch (page) {
+    case MODE_PAGE_FORMAT_DEVICE:
+        length = 0x16;
+        if (page_control == 1) { /* Changeable Values */
+            break;
+        }
+        /* Sectors per track */
+        p[8] = (s->qdev.conf.secs >> 8) & 0xff;
+        p[9] = s->qdev.conf.secs & 0xff;
+        /* Data bytes per physical sector */
+        p[10] = (s->qdev.blocksize >> 8) & 0xff;
+        p[11] = s->qdev.blocksize & 0xff;
+        /* Interleave */
+        p[12] = 0;
+        p[13] = 1;
+        break;
+
     case MODE_PAGE_HD_GEOMETRY:
         length = 0x16;
         if (page_control == 1) { /* Changeable Values */
@@ -1187,9 +1204,9 @@ static int mode_sense_page(SCSIDiskState *s, int page, uint8_t **p_outbuf,
         p[12] = 0xff;
         p[13] =  0xff;
         p[14] = 0xff;
-        /* Medium rotation rate [rpm], 5400 rpm */
-        p[18] = (5400 >> 8) & 0xff;
-        p[19] = 5400 & 0xff;
+        /* Medium rotation rate [rpm], use rotation_rate prop or 5400 */
+        p[18] = ((s->rotation_rate ? s->rotation_rate : 5400) >> 8) & 0xff;
+        p[19] = (s->rotation_rate ? s->rotation_rate : 5400) & 0xff;
         break;
 
     case MODE_PAGE_FLEXIBLE_DISK_GEOMETRY:
@@ -1224,9 +1241,9 @@ static int mode_sense_page(SCSIDiskState *s, int page, uint8_t **p_outbuf,
         p[17] = 1;
         /* Motor off delay [0.1s], 0.1s */
         p[18] = 1;
-        /* Medium rotation rate [rpm], 5400 rpm */
-        p[26] = (5400 >> 8) & 0xff;
-        p[27] = 5400 & 0xff;
+        /* Medium rotation rate [rpm], use rotation_rate prop or 5400 */
+        p[26] = ((s->rotation_rate ? s->rotation_rate : 5400) >> 8) & 0xff;
+        p[27] = (s->rotation_rate ? s->rotation_rate : 5400) & 0xff;
         break;
 
     case MODE_PAGE_CACHING:

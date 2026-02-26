@@ -108,6 +108,7 @@ static void slavio_misc_reset(DeviceState *d)
 
     // Diagnostic and system control registers not cleared in reset
     s->config = s->aux1 = s->aux2 = s->mctrl = 0;
+    s->diag = 0x01; /* diag-switch OFF (no jumper) */
 }
 
 static void slavio_set_power_fail(void *opaque, int irq, int power_failing)

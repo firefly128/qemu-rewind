@@ -47,6 +47,7 @@
 #include "hw/nvram/chrp_nvram.h"
 #include "hw/nvram/fw_cfg.h"
 #include "hw/char/escc.h"
+#include "hw/nmi.h"
 #include "hw/misc/empty_slot.h"
 #include "hw/misc/unimp.h"
 #include "hw/core/irq.h"
@@ -143,6 +144,49 @@ static void fw_cfg_boot_set(void *opaque, const char *boot_device,
     fw_cfg_modify_i16(opaque, FW_CFG_BOOT_DEVICE, boot_device[0]);
 }
 
+/* NVRAM persistence for real Sun firmware support.
+ * When QEMU_NVRAM_FILE is set, loads NVRAM from that file at startup
+ * and saves it back on VM stop/shutdown so firmware-written config
+ * survives reboots.
+ *
+ * The MK48T08 NVRAM chip has 0x2000 bytes total:
+ *   0x0000-0x1FF7  NVRAM (8184 bytes) — config data + IDPROM
+ *   0x1FF8-0x1FFF  Clock/TOD registers (8 bytes, not persisted)
+ * We persist all 0x1FF8 NVRAM bytes (the original code only did 0x1FF0,
+ * which missed 8 bytes that may be part of the firmware's checksum).
+ *
+ * IMPORTANT: We use qemu_add_vm_change_state_handler() instead of
+ * atexit() because the VM state change handler fires inside
+ * vm_shutdown() BEFORE device teardown, so the MK48T08 device and
+ * its buffer are still fully accessible.  atexit() runs AFTER
+ * qemu_cleanup() destroys devices, so reading NVRAM there gives
+ * stale or freed data. */
+#define NVRAM_PERSIST_SIZE 0x1FF8
+
+static Nvram *nvram_persist_dev;
+static char *nvram_persist_path;
+
+static void nvram_save_on_stop(void *opaque, bool running, RunState state)
+{
+    NvramClass *k;
+    uint8_t buf[NVRAM_PERSIST_SIZE];
+    unsigned int i;
+
+    /* Save only when VM transitions from running to stopped */
+    if (running || !nvram_persist_dev || !nvram_persist_path) {
+        return;
+    }
+    k = NVRAM_GET_CLASS(nvram_persist_dev);
+    for (i = 0; i < NVRAM_PERSIST_SIZE; i++) {
+        buf[i] = (k->read)(nvram_persist_dev, i);
+    }
+    fprintf(stderr, "[NVRAM] save-on-stop (state=%d): saving %d bytes, "
+            "cksum bytes: %02x %02x\n",
+            state, NVRAM_PERSIST_SIZE, buf[0], buf[1]);
+    g_file_set_contents(nvram_persist_path, (const gchar *)buf,
+                        NVRAM_PERSIST_SIZE, NULL);
+}
+
 static void nvram_init(Nvram *nvram, uint8_t *macaddr,
                        const char *cmdline, const char *boot_devices,
                        ram_addr_t RAM_size, uint32_t kernel_size,
@@ -150,23 +194,88 @@ static void nvram_init(Nvram *nvram, uint8_t *macaddr,
                        int nvram_machine_id, const char *arch)
 {
     unsigned int i;
-    int sysp_end;
-    uint8_t image[0x1ff0];
+    uint8_t image[NVRAM_PERSIST_SIZE];
     NvramClass *k = NVRAM_GET_CLASS(nvram);
+    const char *nvram_file = getenv("QEMU_NVRAM_FILE");
+    int loaded = 0;
 
     memset(image, '\0', sizeof(image));
 
-    /* OpenBIOS nvram variables partition */
-    sysp_end = chrp_nvram_create_system_partition(image, 0, 0x1fd0);
+    /* Try to load NVRAM from persistent file */
+    if (nvram_file && nvram_file[0]) {
+        gchar *data = NULL;
+        gsize len = 0;
+        fprintf(stderr, "[NVRAM] loading from %s\n", nvram_file);
+        if (g_file_get_contents(nvram_file, &data, &len, NULL)) {
+            fprintf(stderr, "[NVRAM] file size = %lu bytes\n", (unsigned long)len);
+            if (len <= sizeof(image)) {
+                memcpy(image, data, len);
+                loaded = 1;
+                fprintf(stderr, "[NVRAM] loaded OK, cksum bytes: %02x %02x\n",
+                        image[0], image[1]);
+            } else {
+                fprintf(stderr, "[NVRAM] file too large (%lu > %lu), skipping\n",
+                        (unsigned long)len, (unsigned long)sizeof(image));
+            }
+        } else {
+            fprintf(stderr, "[NVRAM] file not found or unreadable\n");
+        }
+        g_free(data);
 
-    /* Free space partition */
-    chrp_nvram_create_free_partition(&image[sysp_end], 0x1fd0 - sysp_end);
+        /* Register save-on-stop handler — fires before device teardown */
+        if (!nvram_persist_dev) {
+            nvram_persist_path = g_strdup(nvram_file);
+            nvram_persist_dev = nvram;
+            qemu_add_vm_change_state_handler(nvram_save_on_stop, NULL);
+        }
+    }
 
+    if (!loaded) {
+        fprintf(stderr, "[NVRAM] no file loaded — NVRAM will be zeroed "
+                "(firmware will init defaults)\n");
+    }
+
+    /* ALWAYS write the IDPROM (16 bytes at offset 0x1FD8).
+     *
+     * On real Sun hardware the MAC address and host ID live in
+     * battery-backed NVRAM alongside the config variables.  The
+     * IDPROM is OUTSIDE the config-checksum area [0:0x800], so
+     * writing it never affects the firmware's config validation.
+     *
+     * Without a valid IDPROM (type byte == 0x01), the firmware
+     * treats the machine as having no identity and reinitializes
+     * ALL of NVRAM to factory defaults — even if the config area
+     * has a perfectly valid checksum.
+     *
+     * Because QEMU's MAC is deterministic (52:54:00:12:34:56 for
+     * the first NIC), Sun_init_header() always produces identical
+     * output, so re-writing over a previously-saved IDPROM is a
+     * harmless no-op. */
     Sun_init_header((struct Sun_nvram *)&image[0x1fd8], macaddr,
                     nvram_machine_id);
 
-    for (i = 0; i < sizeof(image); i++) {
+    /* Config checksum: DO NOT recalculate here.
+     *
+     * When loaded from file the firmware already wrote correct
+     * checksums — touching config bytes causes rejection.
+     *
+     * When fresh (no file) the config area is all zeros; the
+     * firmware detects a bad checksum, resets config to defaults,
+     * writes its own checksum, and our save-on-stop handler
+     * persists the result for subsequent boots. */
+
+    fprintf(stderr, "[NVRAM] writing %d bytes to device\n", NVRAM_PERSIST_SIZE);
+    for (i = 0; i < NVRAM_PERSIST_SIZE; i++) {
         (k->write)(nvram, i, image[i]);
+    }
+
+    /* Readback verify first 2 bytes */
+    {
+        uint8_t v0 = (k->read)(nvram, 0);
+        uint8_t v1 = (k->read)(nvram, 1);
+        fprintf(stderr, "[NVRAM] readback: bytes[0,1] = %02x %02x (expected %02x %02x) %s\n",
+                v0, v1, image[0], image[1],
+                (v0 == image[0] && v1 == image[1]) ? "OK" : "MISMATCH!");
     }
 }
 
@@ -920,7 +1029,7 @@ static void sun4m_hw_init(MachineState *machine)
             }
 
             /* sbus irq 5 */
-            cg3_init(hwdef->tcx_base, slavio_irq[11], 0x00100000,
+            cg3_init(hwdef->tcx_base, slavio_irq[11], 0x00200000,
                      graphic_width, graphic_height, graphic_depth);
             vga_interface_created = true;
         } else {
@@ -936,7 +1045,7 @@ static void sun4m_hw_init(MachineState *machine)
                 exit(1);
             }
 
-            tcx_init(hwdef->tcx_base, slavio_irq[11], 0x00100000,
+            tcx_init(hwdef->tcx_base, slavio_irq[11], 0x00200000,
                      graphic_width, graphic_height, graphic_depth);
             vga_interface_created = true;
         }
@@ -1109,6 +1218,20 @@ enum {
     ss600mp_id,
 };
 
+static void sun4m_nmi(NMIState *n, int cpu_index, Error **errp)
+{
+    /* Raise PIL 15 (NMI) on all CPUs — equivalent to Stop-A */
+    CPUState *cs;
+    CPU_FOREACH(cs) {
+        SPARCCPU *cpu = SPARC_CPU(cs);
+        CPUSPARCState *env = &cpu->env;
+        env->pil_in |= (1 << 15);
+        cs->halted = 0;
+        cpu_check_irqs(env);
+        qemu_cpu_kick(cs);
+    }
+}
+
 static void sun4m_machine_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
@@ -1118,6 +1241,8 @@ static void sun4m_machine_class_init(ObjectClass *oc, const void *data)
     mc->default_boot_order = "c";
     mc->default_display = "tcx";
     mc->default_ram_id = "sun4m.ram";
+    NMIClass *nc = NMI_CLASS(oc);
+    nc->nmi_monitor_handler = sun4m_nmi;
 }
 
 static void ss5_class_init(ObjectClass *oc, const void *data)
@@ -1361,6 +1486,7 @@ static void ss4_class_init(ObjectClass *oc, const void *data)
         .esp_base     = 0x78800000,
         .le_base      = 0x78c00000,
         .apc_base     = 0x6a000000,
+        .afx_base     = 0x6e000000,
         .aux1_base    = 0x71900000,
         .aux2_base    = 0x71910000,
         .nvram_machine_id = 0x80,
@@ -1481,6 +1607,10 @@ static const TypeInfo sun4m_machine_types[] = {
         .class_size     = sizeof(Sun4mMachineClass),
         .class_init     = sun4m_machine_class_init,
         .abstract       = true,
+        .interfaces = (InterfaceInfo[]) {
+            { TYPE_NMI },
+            { }
+        },
     }
 };
 

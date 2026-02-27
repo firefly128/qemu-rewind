@@ -1084,7 +1084,7 @@ ssize_t pcnet_receive(NetClientState *nc, const uint8_t *buf, size_t size_)
 #define PCNET_RECV_STORE() do {                                 \
     int count = MIN(4096 - GET_FIELD(rmd.buf_length, RMDL, BCNT),remaining); \
     hwaddr rbadr = PHYSADDR(s, rmd.rbadr);          \
-    s->phys_mem_write(s->dma_opaque, rbadr, src, count, CSR_BSWP(s)); \
+    s->phys_mem_write(s->dma_opaque, rbadr, src, count, 1); /* LANCE_PKTDATA_FIX */ \
     src += count; remaining -= count;                           \
     SET_FIELD(&rmd.status, RMDS, OWN, 0);                       \
     RMDSTORE(&rmd, PHYSADDR(s,crda));                           \
@@ -1227,7 +1227,7 @@ txagain:
         }
 
         s->phys_mem_read(s->dma_opaque, PHYSADDR(s, tmd.tbadr),
-                         s->buffer + s->xmit_pos, bcnt, CSR_BSWP(s));
+                         s->buffer + s->xmit_pos, bcnt, 1); /* LANCE_PKTDATA_FIX */
         s->xmit_pos += bcnt;
 
         if (!GET_FIELD(tmd.status, TMDS, ENP)) {

@@ -1,18 +1,20 @@
 # Solaris 7 SPARC Patches for QEMU
 
-This fork of QEMU includes 10 patches that enable Solaris 7 to run on emulated
+This fork of QEMU includes 12 patches that enable Solaris 7 to run on emulated
 SPARCstation hardware using real Sun OBP firmware (ss4.bin). These patches are
 required — stock QEMU cannot boot or install Solaris 7 on SS-4.
 
 ## Patched Files
 
 | File | Patches Applied |
-|------|-----------------|
+|------|------------------|
 | `include/scsi/constants.h` | `MODE_PAGE_FORMAT_DEVICE` constant (0x03) |
 | `hw/scsi/scsi-disk.c` | MODE SENSE page 3 handler, rotation rate in pages 4 & 5 |
 | `hw/sparc/sun4m.c` | TCX VRAM 2MB, AFX base address, NMI support, NVRAM persistence |
 | `hw/misc/slavio_misc.c` | diag-switch OFF by default |
 | `hw/char/escc.c` | BREAK interrupt storm fix, NUL byte on BREAK |
+| `hw/net/pcnet.c` | Lance packet data byte-swap fix (TX + RX) |
+| `hw/dma/sparc32_dma.c` | LEDMA DVMA base address fix (read + write) |
 
 ## Patch Details
 
@@ -108,6 +110,54 @@ ESCC (Z8530) UART. Two issues in stock QEMU:
 With this patch, serial BREAK cleanly drops to the OBP `ok` prompt (Stop-A
 equivalent) and the system can resume with `go`.
 
+### 11. Lance Packet Data Byte-Swap Fix
+
+**Critical for networking.** The SPARC LEDMA applies `bswap16` to all DMA data
+when `do_bswap=0` (which is `CSR_BSWP(s)` for the Am7990 lance chip). This is
+correct for descriptor structures and init blocks — `pcnet.c`'s
+`le32/16_to_cpu` macros compensate for the swap. But for **packet data**, the
+bswap16 garbles Ethernet frames:
+
+- TX: guest sends ethertype `0x0806` (ARP) → SLIRP receives `0x0608`
+- RX: SLIRP sends ethertype `0x0800` (IP) → guest receives `0x0008`
+
+SLIRP can't parse the garbled frames, so ARP never resolves and no traffic
+flows.
+
+**Fix:** In `pcnet.c`, pass `do_bswap=1` (skip swap) for the two DMA calls
+that handle packet data: the `phys_mem_read` in `pcnet_transmit` and the
+`phys_mem_write` in the `PCNET_RECV_STORE` macro. Descriptor DMA retains
+`CSR_BSWP(s)=0`. This is safe for `pcnet-pci` which doesn't use LEDMA.
+
+### 12. LEDMA DVMA Base Address Fix
+
+**Critical for networking.** On Sun4m, the LEDMA's `dmaregs[3]` register
+provides the high address bits (`0xFF000000`) that extend the Am7990's 24-bit
+DMA addresses into the IOMMU's mapped range (`0xFF000000–0xFFFFFFFF`). OpenBIOS
+sets this correctly, but the **Solaris `le` driver clears it to 0** during
+device initialization or reset.
+
+With `dmaregs[3]=0`, lance DMA addresses like `0x00E916` go directly to the
+IOMMU without the required high-byte extension. The IOMMU translates these
+through the wrong page table entries, causing `pcnet_transmit` to read garbage
+data (typically OpenBIOS residue or unrelated guest memory) instead of the
+actual packet buffers.
+
+**Diagnosis:** QEMU monitor `xp` commands confirmed:
+- Physical address `0x009CE916` (correct IOPTE mapping via `0xFF00E916`)
+  contains a valid ARP broadcast frame
+- Physical address `0x03221916` (wrong IOPTE mapping via `0x0000E916`)
+  contains zeros or unrelated data
+- `dmaregs[3]` at MMIO address `0x7840001C` reads as `0x00000000`
+
+**Fix:** Replace `addr |= s->dmaregs[3]` with `addr |= 0xff000000` in both
+`ledma_memory_read` and `ledma_memory_write` in `sparc32_dma.c`. This ensures
+the DVMA base is always correct regardless of guest register state.
+
+**Result:** With both patches 11 and 12 applied, SLIRP networking works
+end-to-end: ARP resolves, gateway ping succeeds, DNS resolution works via the
+system resolver, and external connectivity is functional.
+
 ## Applying Patches
 
 The patches are applied via `sed` by the script in
@@ -146,9 +196,13 @@ qemu-system-sparc \
   -device scsi-cd,drive=cd0,bus=scsi.0,scsi-id=6 \
   -serial tcp::5555,server,nowait,telnet \
   -monitor tcp::5556,server,nowait \
-  -net none \
+  -net nic,macaddr=08:00:20:12:34:56 -net user \
   -nographic
 ```
+
+The MAC address `08:00:20:12:34:56` uses the Sun OUI (`08:00:20`) so the
+Solaris `le` driver accepts it. SLIRP provides a gateway at `10.0.2.2`, DNS at
+`10.0.2.3`, and assigns the guest `10.0.2.15/24`.
 
 ## Related Projects
 

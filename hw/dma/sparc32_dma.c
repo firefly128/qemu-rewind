@@ -78,7 +78,7 @@ void ledma_memory_read(void *opaque, hwaddr addr,
     IOMMUState *is = (IOMMUState *)s->iommu;
     int i;
 
-    addr |= s->dmaregs[3];
+    addr |= 0xff000000; /* LEDMA_DVMA_FIX */
     trace_ledma_memory_read(addr, len);
     if (do_bswap) {
         dma_memory_read(&is->iommu_as, addr, buf, len, MEMTXATTRS_UNSPECIFIED);
@@ -100,7 +100,7 @@ void ledma_memory_write(void *opaque, hwaddr addr,
     int l, i;
     uint16_t tmp_buf[32];
 
-    addr |= s->dmaregs[3];
+    addr |= 0xff000000; /* LEDMA_DVMA_FIX */
     trace_ledma_memory_write(addr, len);
     if (do_bswap) {
         dma_memory_write(&is->iommu_as, addr, buf, len,

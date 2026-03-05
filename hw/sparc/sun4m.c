@@ -47,7 +47,7 @@
 #include "hw/nvram/chrp_nvram.h"
 #include "hw/nvram/fw_cfg.h"
 #include "hw/char/escc.h"
-#include "hw/nmi.h"
+#include "hw/core/nmi.h"
 #include "hw/misc/empty_slot.h"
 #include "hw/misc/unimp.h"
 #include "hw/core/irq.h"

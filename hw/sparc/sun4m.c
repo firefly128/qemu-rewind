@@ -1369,7 +1369,6 @@ static void ss20_class_init(ObjectClass *oc, const void *data)
         .esp_base     = 0xef0800000ULL,
         .le_base      = 0xef0c00000ULL,
         .bpp_base     = 0xef4800000ULL,
-        .apc_base     = 0xefa000000ULL, /* XXX should not exist */
         .aux1_base    = 0xff1800000ULL,
         .aux2_base    = 0xff1a01000ULL,
         .dbri_base    = 0xee0000000ULL,

@@ -205,7 +205,8 @@ static void sparc_cpu_parse_features(const char *typename, char *features,
 void cpu_sparc_set_id(CPUSPARCState *env, unsigned int cpu)
 {
 #if !defined(TARGET_SPARC64)
-    env->mxccregs[7] = ((cpu + 8) & 0xf) << 24;
+    env->mxccregs[7] = (env->mxccregs[7] & 0x00ffffffULL)
+                      | (uint64_t)(((cpu + 8) & 0xf) << 24);
 #endif
 }
 
@@ -445,7 +446,7 @@ static const sparc_def_t sparc_defs[] = {
         .mmu_sfsr_mask = 0xffffffff,
         .mmu_trcr_mask = 0xffffffff,
         .nwindows = 8,
-        .features = CPU_DEFAULT_FEATURES,
+        .features = CPU_DEFAULT_FEATURES | CPU_FEATURE_ASR17,
     },
     {
         .name = "TI-SuperSparc-50", /* STP1020PGA */
@@ -458,7 +459,7 @@ static const sparc_def_t sparc_defs[] = {
         .mmu_sfsr_mask = 0xffffffff,
         .mmu_trcr_mask = 0xffffffff,
         .nwindows = 8,
-        .features = CPU_DEFAULT_FEATURES,
+        .features = CPU_DEFAULT_FEATURES | CPU_FEATURE_ASR17,
     },
     {
         .name = "TI-SuperSparc-51",
@@ -472,7 +473,7 @@ static const sparc_def_t sparc_defs[] = {
         .mmu_trcr_mask = 0xffffffff,
         .mxcc_version = 0x00000104,
         .nwindows = 8,
-        .features = CPU_DEFAULT_FEATURES,
+        .features = CPU_DEFAULT_FEATURES | CPU_FEATURE_ASR17,
     },
     {
         .name = "TI-SuperSparc-60", /* STP1020APGA */
@@ -485,7 +486,7 @@ static const sparc_def_t sparc_defs[] = {
         .mmu_sfsr_mask = 0xffffffff,
         .mmu_trcr_mask = 0xffffffff,
         .nwindows = 8,
-        .features = CPU_DEFAULT_FEATURES,
+        .features = CPU_DEFAULT_FEATURES | CPU_FEATURE_ASR17,
     },
     {
         .name = "TI-SuperSparc-61",
@@ -499,7 +500,7 @@ static const sparc_def_t sparc_defs[] = {
         .mmu_trcr_mask = 0xffffffff,
         .mxcc_version = 0x00000104,
         .nwindows = 8,
-        .features = CPU_DEFAULT_FEATURES,
+        .features = CPU_DEFAULT_FEATURES | CPU_FEATURE_ASR17,
     },
     {
         .name = "TI-SuperSparc-II",
@@ -513,7 +514,7 @@ static const sparc_def_t sparc_defs[] = {
         .mmu_trcr_mask = 0xffffffff,
         .mxcc_version = 0x00000104,
         .nwindows = 8,
-        .features = CPU_DEFAULT_FEATURES,
+        .features = CPU_DEFAULT_FEATURES | CPU_FEATURE_ASR17,
     },
     {
         .name = "LEON2",

@@ -687,14 +687,35 @@ uint64_t helper_ld_asi(CPUSPARCState *env, target_ulong addr,
             DPRINTF_MMU("mmu_read: reg[%d] = 0x%08" PRIx64 "\n", reg, ret);
         }
         break;
-    case ASI_M_TLBDIAG: /* Turbosparc ITLB Diagnostic */
-    case ASI_M_DIAGS:   /* Turbosparc DTLB Diagnostic */
-    case ASI_M_IODIAG:  /* Turbosparc IOTLB Diagnostic */
+    case ASI_M_TLBDIAG: /* MMU TLB data diagnostic */
+    {
+        int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
+        ret = env->tlb_diag_data[tlb_idx];
         break;
-    case ASI_M_TXTC_TAG:   /* SparcStation 5 I-cache tag */
-    case ASI_M_TXTC_DATA:  /* SparcStation 5 I-cache data */
-    case ASI_M_DATAC_TAG:  /* SparcStation 5 D-cache tag */
-    case ASI_M_DATAC_DATA: /* SparcStation 5 D-cache data */
+    }
+    case ASI_M_DIAGS:   /* MMU TLB tag diagnostic */
+    {
+        int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
+        ret = env->tlb_diag_tag[tlb_idx];
+        break;
+    }
+    case ASI_M_IODIAG:  /* I/O TLB diagnostic */
+    {
+        int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
+        ret = env->io_tlb_diag[tlb_idx];
+        break;
+    }
+    case ASI_M_TXTC_TAG:   /* I-cache tag diagnostic */
+        ret = env->icache_tag[(addr >> 2) & 0x3ff];
+        break;
+    case ASI_M_TXTC_DATA:  /* I-cache data diagnostic */
+        ret = env->icache_data[(addr >> 2) & 0x3ff];
+        break;
+    case ASI_M_DATAC_TAG:  /* D-cache tag diagnostic */
+        ret = env->dcache_tag[(addr >> 2) & 0x3ff];
+        break;
+    case ASI_M_DATAC_DATA: /* D-cache data diagnostic */
+        ret = env->dcache_data[(addr >> 2) & 0x3ff];
         break;
     case 0x21 ... 0x2f: /* MMU passthrough, 0x100000000 to 0xfffffffff */
     {
@@ -987,6 +1008,56 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
             default:
                 break;
             }
+            /* Clear TLB diagnostic entries matching the flush scope.
+             * SRMMU TLB tag: VA[31:12] | Context[11:0] at field 0.
+             * Each entry has 16 fields; clear all fields when matched. */
+            {
+                uint32_t flush_ctx = env->mmuregs[2] & 0xfff;
+                int entry_number;
+
+                for (entry_number = 0; entry_number < 64; entry_number++) {
+                    uint32_t entry_tag =
+                        env->tlb_diag_tag[entry_number]; /* field 0 */
+                    bool should_flush = false;
+
+                    switch (mmulev) {
+                    case 0: /* page: VA[31:12] + context */
+                        should_flush =
+                            (entry_tag & 0xfffff000) ==
+                                (addr & 0xfffff000) &&
+                            (entry_tag & 0xfff) == flush_ctx;
+                        break;
+                    case 1: /* segment: VA[31:18] + context */
+                        should_flush =
+                            (entry_tag & 0xfffc0000) ==
+                                (addr & 0xfffc0000) &&
+                            (entry_tag & 0xfff) == flush_ctx;
+                        break;
+                    case 2: /* region: VA[31:24] + context */
+                        should_flush =
+                            (entry_tag & 0xff000000) ==
+                                (addr & 0xff000000) &&
+                            (entry_tag & 0xfff) == flush_ctx;
+                        break;
+                    case 3: /* context: match context only */
+                        should_flush =
+                            (entry_tag & 0xfff) == flush_ctx;
+                        break;
+                    case 4: /* entire: unconditional */
+                        should_flush = true;
+                        break;
+                    }
+
+                    if (should_flush) {
+                        /* Only clear field 0 (main TLB).  Higher fields
+                         * (micro-TLB / secondary structures) survive
+                         * flush operations. */
+                        env->tlb_diag_data[entry_number] = 0;
+                        env->tlb_diag_tag[entry_number] = 0;
+                        env->io_tlb_diag[entry_number] = 0;
+                    }
+                }
+            }
 #ifdef DEBUG_MMU
             dump_mmu(env);
 #endif
@@ -1047,14 +1118,36 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
 #endif
         }
         break;
-    case ASI_M_TLBDIAG: /* Turbosparc ITLB Diagnostic */
-    case ASI_M_DIAGS:   /* Turbosparc DTLB Diagnostic */
-    case ASI_M_IODIAG:  /* Turbosparc IOTLB Diagnostic */
+    case ASI_M_TLBDIAG: /* MMU TLB data diagnostic */
+    {
+        int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
+        env->tlb_diag_data[tlb_idx] = val;
         break;
-    case ASI_M_TXTC_TAG:   /* I-cache tag */
-    case ASI_M_TXTC_DATA:  /* I-cache data */
-    case ASI_M_DATAC_TAG:  /* D-cache tag */
-    case ASI_M_DATAC_DATA: /* D-cache data */
+    }
+    case ASI_M_DIAGS:   /* MMU TLB tag diagnostic */
+    {
+        int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
+        env->tlb_diag_tag[tlb_idx] = val;
+        break;
+    }
+    case ASI_M_IODIAG:  /* I/O TLB diagnostic */
+    {
+        int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
+        env->io_tlb_diag[tlb_idx] = val;
+        break;
+    }
+    case ASI_M_TXTC_TAG:   /* I-cache tag diagnostic */
+        env->icache_tag[(addr >> 2) & 0x3ff] = val;
+        break;
+    case ASI_M_TXTC_DATA:  /* I-cache data diagnostic */
+        env->icache_data[(addr >> 2) & 0x3ff] = val;
+        break;
+    case ASI_M_DATAC_TAG:  /* D-cache tag diagnostic */
+        env->dcache_tag[(addr >> 2) & 0x3ff] = val;
+        break;
+    case ASI_M_DATAC_DATA: /* D-cache data diagnostic */
+        env->dcache_data[(addr >> 2) & 0x3ff] = val;
+        break;
     case ASI_M_FLUSH_PAGE:   /* I/D-cache flush page */
     case ASI_M_FLUSH_SEG:    /* I/D-cache flush segment */
     case ASI_M_FLUSH_REGION: /* I/D-cache flush region */

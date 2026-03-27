@@ -506,6 +506,17 @@ struct CPUArchState {
     uint64_t mmubpaction;
     uint64_t mmubpregs[4];
     uint64_t prom_addr;
+    /* TLB/cache diagnostic storage (SuperSPARC POST needs write-readback).
+     * TLB has 64 entries × 16 fields per entry = 1024 slots.
+     * Address format: VA[15:12]=field, VA[9:4]=entry.
+     * Index = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f) */
+    uint32_t tlb_diag_data[1024]; /* ASI 0x05: MMU TLB data diagnostic */
+    uint32_t tlb_diag_tag[1024];  /* ASI 0x06: MMU TLB tag diagnostic */
+    uint32_t io_tlb_diag[1024];   /* ASI 0x07: I/O TLB diagnostic */
+    uint32_t icache_tag[1024];    /* ASI 0x0C: I-cache tag diagnostic */
+    uint32_t icache_data[1024];   /* ASI 0x0D: I-cache data diagnostic */
+    uint32_t dcache_tag[1024];    /* ASI 0x0E: D-cache tag diagnostic */
+    uint32_t dcache_data[1024];   /* ASI 0x0F: D-cache data diagnostic */
 #endif
     float_status fp_status;
 #if defined(TARGET_SPARC64)

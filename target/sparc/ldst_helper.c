@@ -1014,51 +1014,46 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
             default:
                 break;
             }
-            /* Clear TLB diagnostic storage to match flush scope.
+            /* Update TLB diagnostic storage for flush.
              *
              * SuperSPARC TLB diagnostic layout: 64 entries × 16 fields.
              * Index = field * 64 + entry.
              *
-             * For context flush (mmulev=3): the MMU context register
-             * value selects which field to clear (field = ctx & 0xf),
-             * and all 64 entries in that field are zeroed.
+             * Flush operations clear the valid bit (bit 5 = 0x20) in
+             * the TLB data diagnostic (ASI 0x05), preserving all other
+             * bits.  The tag and I/O TLB diagnostics are zeroed.
              *
-             * For entire flush (mmulev=4): all fields of all entries
-             * are cleared.
-             *
-             * For page/segment/region (mmulev 0-2): only field 0 of
-             * all entries is cleared (broad clear — tag matching is
-             * handled by the real TLB flush above). */
+             * Context flush (mmulev=3): affects field = (ctx & 0xf).
+             * Entire flush (mmulev=4): affects all 16 fields.
+             * Page/segment/region (0-2): affects field 0 only. */
             {
                 uint32_t flush_ctx = env->mmuregs[2] & 0xfff;
-                int entry_number;
+                int entry_number, field_number;
+                int field_start, field_end;
                 fprintf(stderr, "[TLB-FLUSH] ASI=0x03 addr=0x%08x mmulev=%d ctx=0x%x\n",
                         (uint32_t)addr, mmulev, flush_ctx);
 
                 if (mmulev == 4) {
-                    /* Flush entire: clear all fields of all entries */
-                    memset(env->tlb_diag_data, 0,
-                           sizeof(env->tlb_diag_data));
-                    memset(env->tlb_diag_tag, 0,
-                           sizeof(env->tlb_diag_tag));
-                    memset(env->io_tlb_diag, 0,
-                           sizeof(env->io_tlb_diag));
+                    field_start = 0;
+                    field_end = 16;
                 } else if (mmulev == 3) {
-                    /* Context flush: clear field = (ctx & 0xf) */
-                    int field_base = (flush_ctx & 0xf) * 64;
-                    for (entry_number = 0; entry_number < 64;
-                         entry_number++) {
-                        env->tlb_diag_data[field_base + entry_number] = 0;
-                        env->tlb_diag_tag[field_base + entry_number] = 0;
-                        env->io_tlb_diag[field_base + entry_number] = 0;
-                    }
+                    field_start = flush_ctx & 0xf;
+                    field_end = field_start + 1;
                 } else {
-                    /* Page/segment/region: clear field 0 */
+                    field_start = 0;
+                    field_end = 1;
+                }
+
+                for (field_number = field_start;
+                     field_number < field_end; field_number++) {
+                    int field_base = field_number * 64;
                     for (entry_number = 0; entry_number < 64;
                          entry_number++) {
-                        env->tlb_diag_data[entry_number] = 0;
-                        env->tlb_diag_tag[entry_number] = 0;
-                        env->io_tlb_diag[entry_number] = 0;
+                        int idx = field_base + entry_number;
+                        /* Clear valid bit (bit 5) only in data */
+                        env->tlb_diag_data[idx] &= ~0x20;
+                        env->tlb_diag_tag[idx] = 0;
+                        env->io_tlb_diag[idx] = 0;
                     }
                 }
             }

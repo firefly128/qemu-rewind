@@ -1014,51 +1014,48 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
             default:
                 break;
             }
-            /* Clear TLB diagnostic entries matching the flush scope.
-             * SRMMU TLB tag: VA[31:12] | Context[11:0] at field 0.
-             * Only clear field 0 (main TLB). */
+            /* Clear TLB diagnostic storage to match flush scope.
+             *
+             * SuperSPARC TLB diagnostic layout: 64 entries × 16 fields.
+             * Index = field * 64 + entry.
+             *
+             * For context flush (mmulev=3): the MMU context register
+             * value selects which field to clear (field = ctx & 0xf),
+             * and all 64 entries in that field are zeroed.
+             *
+             * For entire flush (mmulev=4): all fields of all entries
+             * are cleared.
+             *
+             * For page/segment/region (mmulev 0-2): only field 0 of
+             * all entries is cleared (broad clear — tag matching is
+             * handled by the real TLB flush above). */
             {
                 uint32_t flush_ctx = env->mmuregs[2] & 0xfff;
                 int entry_number;
                 fprintf(stderr, "[TLB-FLUSH] ASI=0x03 addr=0x%08x mmulev=%d ctx=0x%x\n",
                         (uint32_t)addr, mmulev, flush_ctx);
 
-                for (entry_number = 0; entry_number < 64; entry_number++) {
-                    uint32_t entry_tag =
-                        env->tlb_diag_tag[entry_number]; /* field 0 */
-                    bool should_flush = false;
-
-                    switch (mmulev) {
-                    case 0: /* page: VA[31:12] + context */
-                        should_flush =
-                            (entry_tag & 0xfffff000) ==
-                                (addr & 0xfffff000) &&
-                            (entry_tag & 0xfff) == flush_ctx;
-                        break;
-                    case 1: /* segment: VA[31:18] + context */
-                        should_flush =
-                            (entry_tag & 0xfffc0000) ==
-                                (addr & 0xfffc0000) &&
-                            (entry_tag & 0xfff) == flush_ctx;
-                        break;
-                    case 2: /* region: VA[31:24] + context */
-                        should_flush =
-                            (entry_tag & 0xff000000) ==
-                                (addr & 0xff000000) &&
-                            (entry_tag & 0xfff) == flush_ctx;
-                        break;
-                    case 3: /* context: match context only */
-                        should_flush =
-                            (entry_tag & 0xfff) == flush_ctx;
-                        break;
-                    case 4: /* entire: unconditional */
-                        should_flush = true;
-                        break;
+                if (mmulev == 4) {
+                    /* Flush entire: clear all fields of all entries */
+                    memset(env->tlb_diag_data, 0,
+                           sizeof(env->tlb_diag_data));
+                    memset(env->tlb_diag_tag, 0,
+                           sizeof(env->tlb_diag_tag));
+                    memset(env->io_tlb_diag, 0,
+                           sizeof(env->io_tlb_diag));
+                } else if (mmulev == 3) {
+                    /* Context flush: clear field = (ctx & 0xf) */
+                    int field_base = (flush_ctx & 0xf) * 64;
+                    for (entry_number = 0; entry_number < 64;
+                         entry_number++) {
+                        env->tlb_diag_data[field_base + entry_number] = 0;
+                        env->tlb_diag_tag[field_base + entry_number] = 0;
+                        env->io_tlb_diag[field_base + entry_number] = 0;
                     }
-
-                    if (should_flush) {
-                        /* Only clear field 0 (main TLB data).
-                         * Higher fields survive flush. */
+                } else {
+                    /* Page/segment/region: clear field 0 */
+                    for (entry_number = 0; entry_number < 64;
+                         entry_number++) {
                         env->tlb_diag_data[entry_number] = 0;
                         env->tlb_diag_tag[entry_number] = 0;
                         env->io_tlb_diag[entry_number] = 0;

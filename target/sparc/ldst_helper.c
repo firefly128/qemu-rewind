@@ -691,18 +691,24 @@ uint64_t helper_ld_asi(CPUSPARCState *env, target_ulong addr,
     {
         int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
         ret = env->tlb_diag_data[tlb_idx];
+        fprintf(stderr, "[TLB-RD] ASI=0x05 addr=0x%08x idx=%d val=0x%08x\n",
+                (uint32_t)addr, tlb_idx, (uint32_t)ret);
         break;
     }
     case ASI_M_DIAGS:   /* MMU TLB tag diagnostic */
     {
         int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
         ret = env->tlb_diag_tag[tlb_idx];
+        fprintf(stderr, "[TLB-RD] ASI=0x06 addr=0x%08x idx=%d val=0x%08x\n",
+                (uint32_t)addr, tlb_idx, (uint32_t)ret);
         break;
     }
     case ASI_M_IODIAG:  /* I/O TLB diagnostic */
     {
         int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
         ret = env->io_tlb_diag[tlb_idx];
+        fprintf(stderr, "[TLB-RD] ASI=0x07 addr=0x%08x idx=%d val=0x%08x\n",
+                (uint32_t)addr, tlb_idx, (uint32_t)ret);
         break;
     }
     case ASI_M_TXTC_TAG:   /* I-cache tag diagnostic */
@@ -1010,10 +1016,12 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
             }
             /* Clear TLB diagnostic entries matching the flush scope.
              * SRMMU TLB tag: VA[31:12] | Context[11:0] at field 0.
-             * Each entry has 16 fields; clear all fields when matched. */
+             * Only clear field 0 (main TLB). */
             {
                 uint32_t flush_ctx = env->mmuregs[2] & 0xfff;
                 int entry_number;
+                fprintf(stderr, "[TLB-FLUSH] ASI=0x03 addr=0x%08x mmulev=%d ctx=0x%x\n",
+                        (uint32_t)addr, mmulev, flush_ctx);
 
                 for (entry_number = 0; entry_number < 64; entry_number++) {
                     uint32_t entry_tag =
@@ -1052,6 +1060,14 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
                         /* Only clear field 0 (main TLB).  Higher fields
                          * (micro-TLB / secondary structures) survive
                          * flush operations. */
+                        if (env->tlb_diag_data[entry_number] ||
+                            env->tlb_diag_tag[entry_number]) {
+                            fprintf(stderr, "[TLB-FLUSH] clearing entry %d "
+                                    "data=0x%08x tag=0x%08x\n",
+                                    entry_number,
+                                    env->tlb_diag_data[entry_number],
+                                    env->tlb_diag_tag[entry_number]);
+                        }
                         env->tlb_diag_data[entry_number] = 0;
                         env->tlb_diag_tag[entry_number] = 0;
                         env->io_tlb_diag[entry_number] = 0;
@@ -1121,18 +1137,24 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
     case ASI_M_TLBDIAG: /* MMU TLB data diagnostic */
     {
         int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
+        fprintf(stderr, "[TLB-WR] ASI=0x05 addr=0x%08x idx=%d val=0x%08x\n",
+                (uint32_t)addr, tlb_idx, (uint32_t)val);
         env->tlb_diag_data[tlb_idx] = val;
         break;
     }
     case ASI_M_DIAGS:   /* MMU TLB tag diagnostic */
     {
         int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
+        fprintf(stderr, "[TLB-WR] ASI=0x06 addr=0x%08x idx=%d val=0x%08x\n",
+                (uint32_t)addr, tlb_idx, (uint32_t)val);
         env->tlb_diag_tag[tlb_idx] = val;
         break;
     }
     case ASI_M_IODIAG:  /* I/O TLB diagnostic */
     {
         int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
+        fprintf(stderr, "[TLB-WR] ASI=0x07 addr=0x%08x idx=%d val=0x%08x\n",
+                (uint32_t)addr, tlb_idx, (uint32_t)val);
         env->io_tlb_diag[tlb_idx] = val;
         break;
     }

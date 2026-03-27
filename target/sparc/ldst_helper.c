@@ -1019,13 +1019,16 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
              * SuperSPARC TLB diagnostic layout: 64 entries × 16 fields.
              * Index = field * 64 + entry.
              *
-             * Flush operations clear the valid bit (bit 5 = 0x20) in
-             * the TLB data diagnostic (ASI 0x05), preserving all other
-             * bits.  The tag and I/O TLB diagnostics are zeroed.
+             * Flush clears the valid bit (bit 5 = 0x20) in the data
+             * diagnostic, preserving other bits.  Tag and I/O TLB
+             * diagnostics are zeroed.
              *
-             * Context flush (mmulev=3): affects field = (ctx & 0xf).
-             * Entire flush (mmulev=4): affects all 16 fields.
-             * Page/segment/region (0-2): affects field 0 only. */
+             * The affected field is derived from the flush level:
+             *   page    (0): field = (addr >> 12) & 0xf
+             *   segment (1): field = (addr >> 18) & 0xf
+             *   region  (2): field = (addr >> 24) & 0xf
+             *   context (3): field = MMU_ctx_reg & 0xf
+             *   entire  (4): all 16 fields */
             {
                 uint32_t flush_ctx = env->mmuregs[2] & 0xfff;
                 int entry_number, field_number;
@@ -1036,12 +1039,25 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
                 if (mmulev == 4) {
                     field_start = 0;
                     field_end = 16;
-                } else if (mmulev == 3) {
-                    field_start = flush_ctx & 0xf;
-                    field_end = field_start + 1;
                 } else {
-                    field_start = 0;
-                    field_end = 1;
+                    int flush_field;
+                    switch (mmulev) {
+                    case 0: /* page */
+                        flush_field = (addr >> 12) & 0xf;
+                        break;
+                    case 1: /* segment */
+                        flush_field = (addr >> 18) & 0xf;
+                        break;
+                    case 2: /* region */
+                        flush_field = (addr >> 24) & 0xf;
+                        break;
+                    case 3: /* context */
+                    default:
+                        flush_field = flush_ctx & 0xf;
+                        break;
+                    }
+                    field_start = flush_field;
+                    field_end = flush_field + 1;
                 }
 
                 for (field_number = field_start;

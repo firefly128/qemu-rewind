@@ -967,11 +967,20 @@ static void sun4m_hw_init(MachineState *machine)
 
     prom_init(hwdef->slavio_base, machine->firmware);
 
-    /* SuperSPARC ECACHE data backing — POST probes beyond the 1MB PROM
-     * region at physical addresses slavio_base+0x100000..+0x1FFFFF.
-     * Provide an empty slot so reads return 0 instead of bus error. */
-    empty_slot_init("ecache", hwdef->slavio_base + PROM_SIZE_MAX,
-                    1 * MiB);
+    /* SuperSPARC external cache (ECACHE) backing RAM.
+     *
+     * POST tests page table walks and cache coherency using physical
+     * addresses just beyond the 1 MB PROM.  On real hardware the ECACHE
+     * SRAM responds at these addresses; provide writable RAM so POST
+     * reads back what it wrote. */
+    {
+        static MemoryRegion ecache_ram;
+        memory_region_init_ram_nomigrate(&ecache_ram, NULL,
+                                         "sun4m.ecache", 1 * MiB, NULL);
+        memory_region_add_subregion(get_system_memory(),
+                                    hwdef->slavio_base + PROM_SIZE_MAX,
+                                    &ecache_ram);
+    }
 
     slavio_intctl = slavio_intctl_init(hwdef->intctl_base,
                                        hwdef->intctl_base + 0x10000ULL,

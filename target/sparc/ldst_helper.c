@@ -468,6 +468,10 @@ static void sparc_raise_mmu_fault(CPUState *cs, hwaddr addr,
 
     if ((env->mmuregs[0] & MMU_E) && !(env->mmuregs[0] & MMU_NF)) {
         int tt = is_exec ? TT_CODE_ACCESS : TT_DATA_ACCESS;
+        fprintf(stderr, "[MMU-FAULT] %s pa=" HWADDR_FMT_plx " pc=%08x "
+                "mmuregs[0]=%08x asi=%d tt=0x%02x\n",
+                is_exec ? "exec" : is_write ? "write" : "read",
+                addr, (uint32_t)env->pc, env->mmuregs[0], is_asi, tt);
         cpu_raise_exception_ra(env, tt, retaddr);
     }
 

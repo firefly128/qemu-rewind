@@ -176,7 +176,7 @@ static void ecc_mem_write(void *opaque, hwaddr addr, uint64_t val,
         trace_ecc_mem_writel_ecr0(val);
         break;
     case ECC_ECR1:
-        s->regs[ECC_ECR0] =  val;
+        s->regs[ECC_ECR1] =  val;
         trace_ecc_mem_writel_ecr1(val);
         break;
     }
@@ -222,7 +222,7 @@ static uint64_t ecc_mem_read(void *opaque, hwaddr addr,
         trace_ecc_mem_readl_ecr0(ret);
         break;
     case ECC_ECR1:
-        ret = s->regs[ECC_ECR0];
+        ret = s->regs[ECC_ECR1];
         trace_ecc_mem_readl_ecr1(ret);
         break;
     }

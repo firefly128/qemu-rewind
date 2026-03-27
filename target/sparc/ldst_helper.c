@@ -1057,20 +1057,15 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
                     }
 
                     if (should_flush) {
-                        /* Only clear field 0 (main TLB).  Higher fields
-                         * (micro-TLB / secondary structures) survive
-                         * flush operations. */
-                        if (env->tlb_diag_data[entry_number] ||
-                            env->tlb_diag_tag[entry_number]) {
-                            fprintf(stderr, "[TLB-FLUSH] clearing entry %d "
-                                    "data=0x%08x tag=0x%08x\n",
-                                    entry_number,
-                                    env->tlb_diag_data[entry_number],
-                                    env->tlb_diag_tag[entry_number]);
+                        int field_number;
+                        for (field_number = 0; field_number < 16;
+                             field_number++) {
+                            int flush_idx =
+                                field_number * 64 + entry_number;
+                            env->tlb_diag_data[flush_idx] = 0;
+                            env->tlb_diag_tag[flush_idx] = 0;
+                            env->io_tlb_diag[flush_idx] = 0;
                         }
-                        env->tlb_diag_data[entry_number] = 0;
-                        env->tlb_diag_tag[entry_number] = 0;
-                        env->io_tlb_diag[entry_number] = 0;
                     }
                 }
             }

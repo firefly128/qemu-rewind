@@ -1057,15 +1057,11 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
                     }
 
                     if (should_flush) {
-                        int field_number;
-                        for (field_number = 0; field_number < 16;
-                             field_number++) {
-                            int flush_idx =
-                                field_number * 64 + entry_number;
-                            env->tlb_diag_data[flush_idx] = 0;
-                            env->tlb_diag_tag[flush_idx] = 0;
-                            env->io_tlb_diag[flush_idx] = 0;
-                        }
+                        /* Only clear field 0 (main TLB data).
+                         * Higher fields survive flush. */
+                        env->tlb_diag_data[entry_number] = 0;
+                        env->tlb_diag_tag[entry_number] = 0;
+                        env->io_tlb_diag[entry_number] = 0;
                     }
                 }
             }

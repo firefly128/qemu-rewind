@@ -691,24 +691,18 @@ uint64_t helper_ld_asi(CPUSPARCState *env, target_ulong addr,
     {
         int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
         ret = env->tlb_diag_data[tlb_idx];
-        fprintf(stderr, "[TLB-RD] ASI=0x05 addr=0x%08x idx=%d val=0x%08x\n",
-                (uint32_t)addr, tlb_idx, (uint32_t)ret);
         break;
     }
     case ASI_M_DIAGS:   /* MMU TLB tag diagnostic */
     {
         int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
         ret = env->tlb_diag_tag[tlb_idx];
-        fprintf(stderr, "[TLB-RD] ASI=0x06 addr=0x%08x idx=%d val=0x%08x\n",
-                (uint32_t)addr, tlb_idx, (uint32_t)ret);
         break;
     }
     case ASI_M_IODIAG:  /* I/O TLB diagnostic */
     {
         int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
         ret = env->io_tlb_diag[tlb_idx];
-        fprintf(stderr, "[TLB-RD] ASI=0x07 addr=0x%08x idx=%d val=0x%08x\n",
-                (uint32_t)addr, tlb_idx, (uint32_t)ret);
         break;
     }
     case ASI_M_TXTC_TAG:   /* I-cache tag diagnostic */
@@ -1033,8 +1027,6 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
                 uint32_t flush_ctx = env->mmuregs[2] & 0xfff;
                 int entry_number, field_number;
                 int field_start, field_end;
-                fprintf(stderr, "[TLB-FLUSH] ASI=0x03 addr=0x%08x mmulev=%d ctx=0x%x\n",
-                        (uint32_t)addr, mmulev, flush_ctx);
 
                 if (mmulev == 4) {
                     field_start = 0;
@@ -1136,24 +1128,18 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
     case ASI_M_TLBDIAG: /* MMU TLB data diagnostic */
     {
         int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
-        fprintf(stderr, "[TLB-WR] ASI=0x05 addr=0x%08x idx=%d val=0x%08x\n",
-                (uint32_t)addr, tlb_idx, (uint32_t)val);
         env->tlb_diag_data[tlb_idx] = val;
         break;
     }
     case ASI_M_DIAGS:   /* MMU TLB tag diagnostic */
     {
         int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
-        fprintf(stderr, "[TLB-WR] ASI=0x06 addr=0x%08x idx=%d val=0x%08x\n",
-                (uint32_t)addr, tlb_idx, (uint32_t)val);
         env->tlb_diag_tag[tlb_idx] = val;
         break;
     }
     case ASI_M_IODIAG:  /* I/O TLB diagnostic */
     {
         int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
-        fprintf(stderr, "[TLB-WR] ASI=0x07 addr=0x%08x idx=%d val=0x%08x\n",
-                (uint32_t)addr, tlb_idx, (uint32_t)val);
         env->io_tlb_diag[tlb_idx] = val;
         break;
     }
@@ -1355,6 +1341,8 @@ uint64_t helper_ld_asi(CPUSPARCState *env, target_ulong addr,
         g_assert_not_reached();
 
     default:
+        fprintf(stderr, "[ASI-TRAP] unhandled READ asi=0x%02x addr=0x%08x size=%d\n",
+                asi, (uint32_t)addr, size);
         cpu_raise_exception_ra(env, TT_DATA_ACCESS, GETPC());
     }
 
@@ -1420,6 +1408,8 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, target_ulong val,
     case ASI_PNFL: /* Primary no-fault LE, RO */
     case ASI_SNFL: /* Secondary no-fault LE, RO */
     default:
+        fprintf(stderr, "[ASI-TRAP] unhandled WRITE asi=0x%02x addr=0x%08x val=0x%08x size=%d\n",
+                asi, (uint32_t)addr, (uint32_t)val, size);
         cpu_raise_exception_ra(env, TT_DATA_ACCESS, GETPC());
     }
 }

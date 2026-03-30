@@ -922,6 +922,48 @@ static void dummy_fdc_tc(void *opaque, int irq, int level)
 {
 }
 
+/* DEBUG: L1 page-table write watchpoint --------------------------------- */
+static uint8_t l1_watch_backing[16];   /* 4 × uint32_t L1 entries */
+
+static void l1_watch_write(void *opaque, hwaddr addr,
+                           uint64_t val, unsigned size)
+{
+    unsigned int entry_index = (unsigned int)(addr >> 2);
+    uint32_t old_value;
+    memcpy(&old_value, &l1_watch_backing[addr & ~3], 4);
+    /* store big-endian */
+    uint32_t store_value = cpu_to_be32((uint32_t)val);
+    memcpy(&l1_watch_backing[addr & 0xf], &store_value, size);
+    fprintf(stderr, "[L1-WATCH] WRITE PA=0x%04llx L1[%u] old=0x%08x "
+            "new=0x%08x (ET=%d)\n",
+            (unsigned long long)(0x2000 + addr), entry_index,
+            be32_to_cpu(old_value), (uint32_t)val,
+            (int)(val & 3));
+}
+
+static uint64_t l1_watch_read(void *opaque, hwaddr addr,
+                              unsigned size)
+{
+    uint32_t raw_value;
+    memcpy(&raw_value, &l1_watch_backing[addr & ~3], 4);
+    uint32_t host_value = be32_to_cpu(raw_value);
+    fprintf(stderr, "[L1-WATCH] READ  PA=0x%04llx L1[%u] = 0x%08x (ET=%d)\n",
+            (unsigned long long)(0x2000 + addr), (unsigned int)(addr >> 2),
+            host_value, (int)(host_value & 3));
+    return host_value;
+}
+
+static const MemoryRegionOps l1_watch_ops = {
+    .read = l1_watch_read,
+    .write = l1_watch_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = {
+        .min_access_size = 4,
+        .max_access_size = 4,
+    },
+};
+/* END DEBUG ------------------------------------------------------------- */
+
 static void sun4m_hw_init(MachineState *machine)
 {
     const struct sun4m_hwdef *hwdef = SUN4M_MACHINE_GET_CLASS(machine)->hwdef;
@@ -1011,6 +1053,19 @@ static void sun4m_hw_init(MachineState *machine)
         memory_region_add_subregion(get_system_memory(),
                                     hwdef->slavio_base + PROM_SIZE_MAX,
                                     &ecache_ram);
+    }
+
+    /* DEBUG: overlay a watchpoint on the L1 page table at PA 0x2000-0x200F.
+     * Priority 1 beats the RAM region (priority 0) so every access to these
+     * 16 bytes is logged. */
+    {
+        static MemoryRegion l1_watch_region;
+        memset(l1_watch_backing, 0, sizeof(l1_watch_backing));
+        memory_region_init_io(&l1_watch_region, NULL, &l1_watch_ops,
+                              l1_watch_backing, "l1-watch", 16);
+        memory_region_add_subregion_overlap(get_system_memory(), 0x2000,
+                                            &l1_watch_region, 1);
+        fprintf(stderr, "[L1-WATCH] installed at PA 0x2000-0x200F\n");
     }
 
     slavio_intctl = slavio_intctl_init(hwdef->intctl_base,

@@ -91,6 +91,10 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
             full->prot = PAGE_READ | PAGE_EXEC;
             return 0;
         }
+        if ((address & 0xfff00000) == 0 && rw != 2) {
+            fprintf(stderr, "[PHYS] va=0x%08x rw=%d (page fill for bypass access)\n",
+                    (uint32_t)address, rw);
+        }
         full->phys_addr = address;
         full->prot = PAGE_READ | PAGE_WRITE | PAGE_EXEC;
         return 0;

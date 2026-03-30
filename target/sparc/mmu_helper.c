@@ -108,10 +108,24 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
                                MEMTXATTRS_UNSPECIFIED, &result);
     if ((address & 0xfff00000) == 0) {
         fprintf(stderr, "[WALK] va=0x%08x rw=%d CTP=0x%08x ctx=%d "
-                "pde_ptr=0x%llx pde=0x%08x\n",
+                "pde_ptr=0x%llx ctx_pde=0x%08x (type=%d)\n",
                 (uint32_t)address, rw,
                 env->mmuregs[1], env->mmuregs[2],
-                (unsigned long long)pde_ptr, pde);
+                (unsigned long long)pde_ptr, pde, pde & 3);
+        /* If ctx entry is invalid (type=0), dump all 16 entries */
+        if ((pde & 3) == 0) {
+            hwaddr ctx_base = (hwaddr)env->mmuregs[1] << 4;
+            int context_idx;
+            fprintf(stderr, "[WALK] ctx table dump at 0x%llx:\n",
+                    (unsigned long long)ctx_base);
+            for (context_idx = 0; context_idx < 16; context_idx++) {
+                uint32_t entry = address_space_ldl_be(cs->as,
+                    ctx_base + context_idx * 4,
+                    MEMTXATTRS_UNSPECIFIED, NULL);
+                fprintf(stderr, "  ctx[%d]=0x%08x (type=%d)\n",
+                        context_idx, entry, entry & 3);
+            }
+        }
     }
     if (result != MEMTX_OK) {
         return 4 << 2; /* Translation fault, L = 0 */

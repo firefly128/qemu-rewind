@@ -130,8 +130,14 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
         pde = address_space_ldl_be(cs->as, pde_ptr,
                                    MEMTXATTRS_UNSPECIFIED, &result);
         if ((address & 0xfff00000) == 0) {
-            fprintf(stderr, "[WALK]   L1 pde_ptr=0x%llx pde=0x%08x (type=%d)\n",
-                    (unsigned long long)pde_ptr, pde, pde & 3);
+            /* Also peek at PROM-space mirror to detect ECACHE-like writes */
+            uint32_t prom_pde = address_space_ldl_be(cs->as,
+                pde_ptr + 0xff0000000ULL,
+                MEMTXATTRS_UNSPECIFIED, NULL);
+            fprintf(stderr, "[WALK]   L1 pde_ptr=0x%llx pde=0x%08x (type=%d)"
+                    " prom@0x%llx=0x%08x\n",
+                    (unsigned long long)pde_ptr, pde, pde & 3,
+                    (unsigned long long)(pde_ptr + 0xff0000000ULL), prom_pde);
         }
         if (result != MEMTX_OK) {
             return (1 << 8) | (4 << 2); /* Translation fault, L = 1 */

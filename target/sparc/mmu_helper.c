@@ -144,14 +144,22 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
         pde = address_space_ldl_be(cs->as, pde_ptr,
                                    MEMTXATTRS_UNSPECIFIED, &result);
         if ((address & 0xfff00000) == 0) {
-            /* Also peek at PROM-space mirror to detect ECACHE-like writes */
-            uint32_t prom_pde = address_space_ldl_be(cs->as,
-                pde_ptr + 0xff0000000ULL,
-                MEMTXATTRS_UNSPECIFIED, NULL);
-            fprintf(stderr, "[WALK]   L1 pde_ptr=0x%llx pde=0x%08x (type=%d)"
-                    " prom@0x%llx=0x%08x\n",
-                    (unsigned long long)pde_ptr, pde, pde & 3,
-                    (unsigned long long)(pde_ptr + 0xff0000000ULL), prom_pde);
+            fprintf(stderr, "[WALK]   L1 pde_ptr=0x%llx pde=0x%08x (type=%d)\n",
+                    (unsigned long long)pde_ptr, pde, pde & 3);
+            /* If this is a PTE (type=2), check what phys_addr would be
+             * and compare RAM vs PROM at the target offset */
+            if ((pde & 3) == 2) {
+                hwaddr phy = ((hwaddr)(pde & PTE_ADDR_MASK) << 4)
+                             + (address & 0xfff000);
+                uint32_t ram_val = address_space_ldl_be(cs->as,
+                    address, MEMTXATTRS_UNSPECIFIED, NULL);
+                uint32_t prom_val = address_space_ldl_be(cs->as,
+                    phy, MEMTXATTRS_UNSPECIFIED, NULL);
+                fprintf(stderr, "[WALK]   PTE→PA=0x%llx prom_val=0x%08x "
+                        "ram@0x%08x=0x%08x\n",
+                        (unsigned long long)phy, prom_val,
+                        (uint32_t)address, ram_val);
+            }
         }
         if (result != MEMTX_OK) {
             return (1 << 8) | (4 << 2); /* Translation fault, L = 1 */

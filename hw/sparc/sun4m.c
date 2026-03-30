@@ -970,6 +970,34 @@ static void sun4m_hw_init(MachineState *machine)
 
     prom_init(hwdef->slavio_base, machine->firmware);
 
+    /* DEBUG: verify PROM and main RAM writability */
+    {
+        MemTxResult txr;
+        uint32_t val;
+        hwaddr prom_test_addr = hwdef->slavio_base + 0x80000;
+        hwaddr ram_test_addr = 0x2000;
+
+        /* Test PROM write-readback at offset 0x80000 */
+        address_space_stl_be(&address_space_memory, prom_test_addr,
+                             0xDEADBEEF, MEMTXATTRS_UNSPECIFIED, &txr);
+        val = address_space_ldl_be(&address_space_memory, prom_test_addr,
+                                   MEMTXATTRS_UNSPECIFIED, &txr);
+        fprintf(stderr, "[PROM-TEST] write 0xDEADBEEF to 0x%llx, "
+                "readback=0x%08x (%s)\n",
+                (unsigned long long)prom_test_addr, val,
+                val == 0xDEADBEEF ? "OK" : "FAIL");
+
+        /* Restore zero */
+        address_space_stl_be(&address_space_memory, prom_test_addr,
+                             0, MEMTXATTRS_UNSPECIFIED, &txr);
+
+        /* Test main RAM write-readback at 0x2000 */
+        val = address_space_ldl_be(&address_space_memory, ram_test_addr,
+                                   MEMTXATTRS_UNSPECIFIED, &txr);
+        fprintf(stderr, "[RAM-TEST] current value at 0x%llx = 0x%08x\n",
+                (unsigned long long)ram_test_addr, val);
+    }
+
     /* SuperSPARC external cache (ECACHE) backing RAM.
      *
      * POST tests page table walks and cache coherency using physical

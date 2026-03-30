@@ -695,31 +695,45 @@ uint64_t helper_ld_asi(CPUSPARCState *env, target_ulong addr,
     {
         int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
         ret = env->tlb_diag_data[tlb_idx];
+        fprintf(stderr, "[DIAG-RD] ASI=0x05 TLB-data addr=0x%08x idx=%d val=0x%08x\n",
+                (uint32_t)addr, tlb_idx, (uint32_t)ret);
         break;
     }
     case ASI_M_DIAGS:   /* MMU TLB tag diagnostic */
     {
         int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
         ret = env->tlb_diag_tag[tlb_idx];
+        fprintf(stderr, "[DIAG-RD] ASI=0x06 TLB-tag  addr=0x%08x idx=%d val=0x%08x\n",
+                (uint32_t)addr, tlb_idx, (uint32_t)ret);
         break;
     }
     case ASI_M_IODIAG:  /* I/O TLB diagnostic */
     {
         int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
         ret = env->io_tlb_diag[tlb_idx];
+        fprintf(stderr, "[DIAG-RD] ASI=0x07 IO-TLB   addr=0x%08x idx=%d val=0x%08x\n",
+                (uint32_t)addr, tlb_idx, (uint32_t)ret);
         break;
     }
     case ASI_M_TXTC_TAG:   /* I-cache tag diagnostic */
         ret = env->icache_tag[(addr >> 2) & 0x3ff];
+        fprintf(stderr, "[DIAG-RD] ASI=0x0C I$-tag   addr=0x%08x idx=%d val=0x%08x\n",
+                (uint32_t)addr, (int)((addr >> 2) & 0x3ff), (uint32_t)ret);
         break;
     case ASI_M_TXTC_DATA:  /* I-cache data diagnostic */
         ret = env->icache_data[(addr >> 2) & 0x3ff];
+        fprintf(stderr, "[DIAG-RD] ASI=0x0D I$-data  addr=0x%08x idx=%d val=0x%08x\n",
+                (uint32_t)addr, (int)((addr >> 2) & 0x3ff), (uint32_t)ret);
         break;
     case ASI_M_DATAC_TAG:  /* D-cache tag diagnostic */
         ret = env->dcache_tag[(addr >> 2) & 0x3ff];
+        fprintf(stderr, "[DIAG-RD] ASI=0x0E D$-tag   addr=0x%08x idx=%d val=0x%08x\n",
+                (uint32_t)addr, (int)((addr >> 2) & 0x3ff), (uint32_t)ret);
         break;
     case ASI_M_DATAC_DATA: /* D-cache data diagnostic */
         ret = env->dcache_data[(addr >> 2) & 0x3ff];
+        fprintf(stderr, "[DIAG-RD] ASI=0x0F D$-data  addr=0x%08x idx=%d val=0x%08x\n",
+                (uint32_t)addr, (int)((addr >> 2) & 0x3ff), (uint32_t)ret);
         break;
     case 0x21 ... 0x2f: /* MMU passthrough, 0x100000000 to 0xfffffffff */
     {
@@ -1143,31 +1157,45 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
     case ASI_M_TLBDIAG: /* MMU TLB data diagnostic */
     {
         int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
+        fprintf(stderr, "[DIAG-WR] ASI=0x05 TLB-data addr=0x%08x idx=%d val=0x%08x\n",
+                (uint32_t)addr, tlb_idx, (uint32_t)val);
         env->tlb_diag_data[tlb_idx] = val;
         break;
     }
     case ASI_M_DIAGS:   /* MMU TLB tag diagnostic */
     {
         int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
+        fprintf(stderr, "[DIAG-WR] ASI=0x06 TLB-tag  addr=0x%08x idx=%d val=0x%08x\n",
+                (uint32_t)addr, tlb_idx, (uint32_t)val);
         env->tlb_diag_tag[tlb_idx] = val;
         break;
     }
     case ASI_M_IODIAG:  /* I/O TLB diagnostic */
     {
         int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
+        fprintf(stderr, "[DIAG-WR] ASI=0x07 IO-TLB   addr=0x%08x idx=%d val=0x%08x\n",
+                (uint32_t)addr, tlb_idx, (uint32_t)val);
         env->io_tlb_diag[tlb_idx] = val;
         break;
     }
     case ASI_M_TXTC_TAG:   /* I-cache tag diagnostic */
+        fprintf(stderr, "[DIAG-WR] ASI=0x0C I$-tag   addr=0x%08x idx=%d val=0x%08x\n",
+                (uint32_t)addr, (int)((addr >> 2) & 0x3ff), (uint32_t)val);
         env->icache_tag[(addr >> 2) & 0x3ff] = val;
         break;
     case ASI_M_TXTC_DATA:  /* I-cache data diagnostic */
+        fprintf(stderr, "[DIAG-WR] ASI=0x0D I$-data  addr=0x%08x idx=%d val=0x%08x\n",
+                (uint32_t)addr, (int)((addr >> 2) & 0x3ff), (uint32_t)val);
         env->icache_data[(addr >> 2) & 0x3ff] = val;
         break;
     case ASI_M_DATAC_TAG:  /* D-cache tag diagnostic */
+        fprintf(stderr, "[DIAG-WR] ASI=0x0E D$-tag   addr=0x%08x idx=%d val=0x%08x\n",
+                (uint32_t)addr, (int)((addr >> 2) & 0x3ff), (uint32_t)val);
         env->dcache_tag[(addr >> 2) & 0x3ff] = val;
         break;
     case ASI_M_DATAC_DATA: /* D-cache data diagnostic */
+        fprintf(stderr, "[DIAG-WR] ASI=0x0F D$-data  addr=0x%08x idx=%d val=0x%08x\n",
+                (uint32_t)addr, (int)((addr >> 2) & 0x3ff), (uint32_t)val);
         env->dcache_data[(addr >> 2) & 0x3ff] = val;
         break;
     case ASI_M_FLUSH_PAGE:   /* I/D-cache flush page */

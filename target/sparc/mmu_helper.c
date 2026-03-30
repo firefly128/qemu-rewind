@@ -148,24 +148,26 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
         pde = address_space_ldl_be(cs->as, pde_ptr,
                                    MEMTXATTRS_UNSPECIFIED, &result);
         if ((address & 0xfff00000) == 0) {
-            hwaddr l1_base = (hwaddr)(pde & ~3) << 4;
-            fprintf(stderr, "[WALK]   L1 pde_ptr=0x%llx pde=0x%08x (type=%d)"
-                    " l1_base=0x%llx\n",
-                    (unsigned long long)pde_ptr, pde, pde & 3,
-                    (unsigned long long)l1_base);
-            /* Dump first 4 L1 entries and nearby page table pages */
+            /* pde_ptr here points to the specific L1 entry that was read.
+             * Compute the L1 table base from pde_ptr by masking off the
+             * entry index (which is in the low bits from the VA shift). */
+            hwaddr l1_table_base = pde_ptr & ~0x3ff; /* 256 entries × 4 = 1024 */
+            fprintf(stderr, "[WALK]   L1 pde_ptr=0x%llx pde=0x%08x (type=%d)\n",
+                    (unsigned long long)pde_ptr, pde, pde & 3);
+            /* Dump first 4 L1 entries from the actual table base */
             {
                 int dump_index;
-                fprintf(stderr, "[WALK]   L1 table[0..3]:");
+                fprintf(stderr, "[WALK]   L1@0x%llx[0..3]:",
+                        (unsigned long long)l1_table_base);
                 for (dump_index = 0; dump_index < 4; dump_index++) {
                     uint32_t entry = address_space_ldl_be(cs->as,
-                        l1_base + dump_index * 4,
+                        l1_table_base + dump_index * 4,
                         MEMTXATTRS_UNSPECIFIED, NULL);
                     fprintf(stderr, " [%d]=0x%08x", dump_index, entry);
                 }
                 fprintf(stderr, "\n");
                 /* Dump first word at PA 0x3000-0x6000 to see L2/L3 tables */
-                fprintf(stderr, "[WALK]   PA dumps:");
+                fprintf(stderr, "[WALK]   RAM dumps:");
                 for (dump_index = 3; dump_index <= 6; dump_index++) {
                     uint32_t v = address_space_ldl_be(cs->as,
                         dump_index * 0x1000,

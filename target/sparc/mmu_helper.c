@@ -189,8 +189,15 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
             return (1 << 8) | (4 << 2);
         case 1: /* L1 PDE */
             pde_ptr = ((address & 0xfc0000) >> 16) + ((hwaddr)(pde & ~3) << 4);
-            pde = address_space_ldl_be(cs->as, pde_ptr,
-                                       MEMTXATTRS_UNSPECIFIED, &result);
+            {
+                uint32_t l1_pde_saved = pde; /* the L1 PDP we just traversed */
+                pde = address_space_ldl_be(cs->as, pde_ptr,
+                                           MEMTXATTRS_UNSPECIFIED, &result);
+                fprintf(stderr, "[WALK-L2] va=0x%08x L1-PDP=0x%08x "
+                        "L2@0x%llx L2-pde=0x%08x (type=%d)\n",
+                        (uint32_t)address, l1_pde_saved,
+                        (unsigned long long)pde_ptr, pde, pde & 3);
+            }
             if ((address & 0xfff00000) == 0) {
                 fprintf(stderr, "[WALK]   L2 pde_ptr=0x%llx pde=0x%08x (type=%d)\n",
                         (unsigned long long)pde_ptr, pde, pde & 3);
@@ -267,6 +274,11 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
     /* Even if large ptes, we map only one 4KB page in the cache to
        avoid filling it too fast */
     full->phys_addr = ((hwaddr)(pde & PTE_ADDR_MASK) << 4) + page_offset;
+
+    if (error_code) {
+        fprintf(stderr, "[WALK-ERR] va=0x%08x rw=%d err=0x%x\n",
+                (uint32_t)address, rw, error_code);
+    }
     return error_code;
 }
 

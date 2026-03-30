@@ -998,6 +998,8 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
             int mmulev;
 
             mmulev = (addr >> 8) & 15;
+            fprintf(stderr, "[MMU-FLUSH] level=%d addr=0x%08x\n",
+                    mmulev, (uint32_t)addr);
             DPRINTF_MMU("mmu flush level %d\n", mmulev);
             switch (mmulev) {
             case 0: /* flush page */
@@ -1085,6 +1087,11 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
             case 0: /* Control Register */
                 env->mmuregs[reg] = (env->mmuregs[reg] & 0xff000000) |
                     (val & 0x00ffffff);
+                fprintf(stderr, "[MMU-REG] CTRL=0x%08x (E=%d NF=%d BM=%d)\n",
+                        env->mmuregs[0],
+                        !!(env->mmuregs[0] & 1),
+                        !!(env->mmuregs[0] & 2),
+                        !!(env->mmuregs[0] & env->def.mmu_bm));
                 /* Mappings generated during no-fault mode
                    are invalid in normal mode.  */
                 if ((oldreg ^ env->mmuregs[reg])
@@ -1094,9 +1101,13 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
                 break;
             case 1: /* Context Table Pointer Register */
                 env->mmuregs[reg] = val & env->def.mmu_ctpr_mask;
+                fprintf(stderr, "[MMU-REG] CTP=0x%08x (PA=0x%llx)\n",
+                        env->mmuregs[1],
+                        (unsigned long long)((hwaddr)env->mmuregs[1] << 4));
                 break;
             case 2: /* Context Register */
                 env->mmuregs[reg] = val & env->def.mmu_cxr_mask;
+                fprintf(stderr, "[MMU-REG] CTX=%d\n", env->mmuregs[2]);
                 if (oldreg != env->mmuregs[reg]) {
                     /* we flush when the MMU context changes because
                        QEMU has no MMU context support */

@@ -106,12 +106,13 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
     pde_ptr = ((hwaddr)env->mmuregs[1] << 4) + (env->mmuregs[2] << 2);
     pde = address_space_ldl_be(cs->as, pde_ptr,
                                MEMTXATTRS_UNSPECIFIED, &result);
-    qemu_log_mask(CPU_LOG_MMU,
-                  "MMU walk va=0x%08x rw=%d CTP=0x%08x ctx=%d "
-                  "ctx_pde_ptr=" HWADDR_FMT_plx " ctx_pde=0x%08x\n",
-                  (uint32_t)address, rw,
-                  env->mmuregs[1], env->mmuregs[2],
-                  pde_ptr, pde);
+    if ((address & 0xfff00000) == 0) {
+        fprintf(stderr, "[WALK] va=0x%08x rw=%d CTP=0x%08x ctx=%d "
+                "pde_ptr=0x%llx pde=0x%08x\n",
+                (uint32_t)address, rw,
+                env->mmuregs[1], env->mmuregs[2],
+                (unsigned long long)pde_ptr, pde);
+    }
     if (result != MEMTX_OK) {
         return 4 << 2; /* Translation fault, L = 0 */
     }
@@ -128,9 +129,10 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
         pde_ptr = ((address >> 22) & ~3) + ((hwaddr)(pde & ~3) << 4);
         pde = address_space_ldl_be(cs->as, pde_ptr,
                                    MEMTXATTRS_UNSPECIFIED, &result);
-        qemu_log_mask(CPU_LOG_MMU,
-                      "  L1 pde_ptr=" HWADDR_FMT_plx " pde=0x%08x\n",
-                      pde_ptr, pde);
+        if ((address & 0xfff00000) == 0) {
+            fprintf(stderr, "[WALK]   L1 pde_ptr=0x%llx pde=0x%08x (type=%d)\n",
+                    (unsigned long long)pde_ptr, pde, pde & 3);
+        }
         if (result != MEMTX_OK) {
             return (1 << 8) | (4 << 2); /* Translation fault, L = 1 */
         }
@@ -145,9 +147,10 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
             pde_ptr = ((address & 0xfc0000) >> 16) + ((hwaddr)(pde & ~3) << 4);
             pde = address_space_ldl_be(cs->as, pde_ptr,
                                        MEMTXATTRS_UNSPECIFIED, &result);
-            qemu_log_mask(CPU_LOG_MMU,
-                          "  L2 pde_ptr=" HWADDR_FMT_plx " pde=0x%08x\n",
-                          pde_ptr, pde);
+            if ((address & 0xfff00000) == 0) {
+                fprintf(stderr, "[WALK]   L2 pde_ptr=0x%llx pde=0x%08x (type=%d)\n",
+                        (unsigned long long)pde_ptr, pde, pde & 3);
+            }
             if (result != MEMTX_OK) {
                 return (2 << 8) | (4 << 2); /* Translation fault, L = 2 */
             }

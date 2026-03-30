@@ -834,7 +834,10 @@ static void prom_realize(DeviceState *ds, Error **errp)
     }
 
     vmstate_register_ram_global(&s->prom);
-    memory_region_set_readonly(&s->prom, true);
+    /* Keep PROM writable — on real hardware the external cache (ECACHE)
+     * sits in front of the PROM and absorbs writes.  POST relies on
+     * writing page table entries and test data to PROM-space addresses
+     * and reading them back through the ECACHE. */
     sysbus_init_mmio(dev, &s->prom);
 }
 

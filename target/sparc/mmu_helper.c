@@ -281,6 +281,12 @@ target_ulong mmu_probe(CPUSPARCState *env, target_ulong address, int mmulev)
         (env->mmuregs[2] << 2);
     pde = address_space_ldl_be(cs->as, pde_ptr,
                                MEMTXATTRS_UNSPECIFIED, &result);
+    fprintf(stderr, "[PROBE] va=0x%08x lev=%d ctxbase=0x%llx ctx=%d "
+            "pde_ptr=0x%llx pde=0x%08x res=%d\n",
+            (uint32_t)address, mmulev,
+            (unsigned long long)(env->mmuregs[1] << 4),
+            env->mmuregs[2],
+            (unsigned long long)pde_ptr, pde, result);
     if (result != MEMTX_OK) {
         return 0;
     }

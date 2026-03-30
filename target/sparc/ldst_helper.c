@@ -1101,11 +1101,19 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
             case 0: /* Control Register */
                 env->mmuregs[reg] = (env->mmuregs[reg] & 0xff000000) |
                     (val & 0x00ffffff);
-                fprintf(stderr, "[MMU-REG] CTRL=0x%08x (E=%d NF=%d BM=%d)\n",
-                        env->mmuregs[0],
-                        !!(env->mmuregs[0] & 1),
-                        !!(env->mmuregs[0] & 2),
-                        !!(env->mmuregs[0] & env->def.mmu_bm));
+                {
+                    /* Dump PA 0x2000 (L1 table) at every CTRL write */
+                    MemTxResult ctrl_mr;
+                    uint32_t l1_val = address_space_ldl_be(cs->as, 0x2000,
+                        MEMTXATTRS_UNSPECIFIED, &ctrl_mr);
+                    fprintf(stderr, "[MMU-REG] CTRL=0x%08x (E=%d NF=%d BM=%d)"
+                            " L1@0x2000=0x%08x\n",
+                            env->mmuregs[0],
+                            !!(env->mmuregs[0] & 1),
+                            !!(env->mmuregs[0] & 2),
+                            !!(env->mmuregs[0] & env->def.mmu_bm),
+                            l1_val);
+                }
                 /* Mappings generated during no-fault mode
                    are invalid in normal mode.  */
                 if ((oldreg ^ env->mmuregs[reg])

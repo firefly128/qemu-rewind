@@ -148,21 +148,31 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
         pde = address_space_ldl_be(cs->as, pde_ptr,
                                    MEMTXATTRS_UNSPECIFIED, &result);
         if ((address & 0xfff00000) == 0) {
-            fprintf(stderr, "[WALK]   L1 pde_ptr=0x%llx pde=0x%08x (type=%d)\n",
-                    (unsigned long long)pde_ptr, pde, pde & 3);
-            /* If this is a PTE (type=2), check what phys_addr would be
-             * and compare RAM vs PROM at the target offset */
-            if ((pde & 3) == 2) {
-                hwaddr phy = ((hwaddr)(pde & PTE_ADDR_MASK) << 4)
-                             + (address & 0xfff000);
-                uint32_t ram_val = address_space_ldl_be(cs->as,
-                    address, MEMTXATTRS_UNSPECIFIED, NULL);
-                uint32_t prom_val = address_space_ldl_be(cs->as,
-                    phy, MEMTXATTRS_UNSPECIFIED, NULL);
-                fprintf(stderr, "[WALK]   PTE→PA=0x%llx prom_val=0x%08x "
-                        "ram@0x%08x=0x%08x\n",
-                        (unsigned long long)phy, prom_val,
-                        (uint32_t)address, ram_val);
+            hwaddr l1_base = (hwaddr)(pde & ~3) << 4;
+            fprintf(stderr, "[WALK]   L1 pde_ptr=0x%llx pde=0x%08x (type=%d)"
+                    " l1_base=0x%llx\n",
+                    (unsigned long long)pde_ptr, pde, pde & 3,
+                    (unsigned long long)l1_base);
+            /* Dump first 4 L1 entries and nearby page table pages */
+            {
+                int dump_index;
+                fprintf(stderr, "[WALK]   L1 table[0..3]:");
+                for (dump_index = 0; dump_index < 4; dump_index++) {
+                    uint32_t entry = address_space_ldl_be(cs->as,
+                        l1_base + dump_index * 4,
+                        MEMTXATTRS_UNSPECIFIED, NULL);
+                    fprintf(stderr, " [%d]=0x%08x", dump_index, entry);
+                }
+                fprintf(stderr, "\n");
+                /* Dump first word at PA 0x3000-0x6000 to see L2/L3 tables */
+                fprintf(stderr, "[WALK]   PA dumps:");
+                for (dump_index = 3; dump_index <= 6; dump_index++) {
+                    uint32_t v = address_space_ldl_be(cs->as,
+                        dump_index * 0x1000,
+                        MEMTXATTRS_UNSPECIFIED, NULL);
+                    fprintf(stderr, " @0x%x=0x%08x", dump_index * 0x1000, v);
+                }
+                fprintf(stderr, "\n");
             }
         }
         if (result != MEMTX_OK) {

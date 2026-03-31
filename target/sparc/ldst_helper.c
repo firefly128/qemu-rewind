@@ -1120,7 +1120,7 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
                 /* Mappings generated during no-fault mode
                    are invalid in normal mode.  */
                 if ((oldreg ^ env->mmuregs[reg])
-                    & (MMU_NF | env->def.mmu_bm)) {
+                    & (MMU_E | MMU_NF | env->def.mmu_bm)) {
                     tlb_flush(cs);
                 }
                 break;

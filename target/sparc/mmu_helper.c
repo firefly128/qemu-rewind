@@ -275,6 +275,16 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
        avoid filling it too fast */
     full->phys_addr = ((hwaddr)(pde & PTE_ADDR_MASK) << 4) + page_offset;
 
+    if ((address & 0xfffff000) == 0x00080000) {
+        uint32_t probe_val = address_space_ldl_be(cs->as, full->phys_addr,
+            MEMTXATTRS_UNSPECIFIED, NULL);
+        fprintf(stderr, "[WALK-PA] va=0x%08x rw=%d → PA=0x%llx "
+                "data@PA=0x%08x pde=0x%08x prot=%x\n",
+                (uint32_t)address, rw,
+                (unsigned long long)full->phys_addr,
+                probe_val, pde, full->prot);
+    }
+
     if (error_code) {
         fprintf(stderr, "[WALK-ERR] va=0x%08x rw=%d err=0x%x\n",
                 (uint32_t)address, rw, error_code);

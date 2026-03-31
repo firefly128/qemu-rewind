@@ -759,6 +759,13 @@ uint64_t helper_ld_asi(CPUSPARCState *env, target_ulong addr,
                                        MEMTXATTRS_UNSPECIFIED, &result);
             break;
         }
+        if ((access_addr >> 20) == 0xff00 ||
+            (access_addr >> 20) == 0x0000) {
+            fprintf(stderr, "[EXT-BYPASS-RD] ASI=0x%02x PA=0x%llx sz=%d "
+                    "val=0x%08llx\n", asi,
+                    (unsigned long long)access_addr, size,
+                    (unsigned long long)ret);
+        }
 
         if (result != MEMTX_OK) {
             sparc_raise_mmu_fault(cs, access_addr, false, false, false,
@@ -1220,6 +1227,13 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
             MemTxResult result;
             hwaddr access_addr = (hwaddr)addr | ((hwaddr)(asi & 0xf) << 32);
 
+            if ((access_addr >> 20) == 0xff00 ||
+                (access_addr >> 20) == 0x0000) {
+                fprintf(stderr, "[EXT-BYPASS-WR] ASI=0x%02x PA=0x%llx sz=%d "
+                        "val=0x%08llx\n", asi,
+                        (unsigned long long)access_addr, size,
+                        (unsigned long long)val);
+            }
             switch (size) {
             case 1:
                 address_space_stb(cs->as, access_addr, val,

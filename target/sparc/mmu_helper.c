@@ -146,8 +146,19 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
     /* Ctx pde */
     switch (pde & PTE_ENTRYTYPE_MASK) {
     default:
-    case 0: /* Invalid */
+    case 0: /* Invalid */ {
+        static int walk_fail_count;
+        if (walk_fail_count < 50) {
+            fprintf(stderr, "WALK-FAIL ctx-invalid VA=%08x rw=%d "
+                    "mmuregs[0]=%08x [1]=%08x [2]=%08x "
+                    "pde_ptr=%09llx pde=%08x\n",
+                    address, rw,
+                    env->mmuregs[0], env->mmuregs[1], env->mmuregs[2],
+                    (unsigned long long)pde_ptr, pde);
+            walk_fail_count++;
+        }
         return 1 << 2;
+    }
     case 2: /* L0 PTE, maybe should not happen? */
     case 3: /* Reserved */
         return 4 << 2;
@@ -162,8 +173,17 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
 
         switch (pde & PTE_ENTRYTYPE_MASK) {
         default:
-        case 0: /* Invalid */
+        case 0: /* Invalid */ {
+            static int l1_fail_count;
+            if (l1_fail_count < 50) {
+                fprintf(stderr, "WALK-FAIL L1-invalid VA=%08x rw=%d "
+                        "pde_ptr=%09llx pde=%08x\n",
+                        address, rw,
+                        (unsigned long long)pde_ptr, pde);
+                l1_fail_count++;
+            }
             return (1 << 8) | (1 << 2);
+        }
         case 3: /* Reserved */
             return (1 << 8) | (4 << 2);
         case 1: /* L1 PDE */

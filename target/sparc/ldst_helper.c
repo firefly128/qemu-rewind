@@ -1098,6 +1098,19 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
             case 0: /* Control Register */
                 env->mmuregs[reg] = (env->mmuregs[reg] & 0xff000000) |
                     (val & 0x00ffffff);
+                {
+                    static int mmuctrl_trace_count;
+                    if (mmuctrl_trace_count < 80) {
+                        fprintf(stderr, "MMUCTRL old=%08x new=%08x "
+                                "(E=%d NF=%d BM=%d) PC=%08x\n",
+                                oldreg, env->mmuregs[reg],
+                                !!(env->mmuregs[reg] & MMU_E),
+                                !!(env->mmuregs[reg] & MMU_NF),
+                                !!(env->mmuregs[reg] & env->def.mmu_bm),
+                                env->pc);
+                        mmuctrl_trace_count++;
+                    }
+                }
                 /* Mappings generated during no-fault mode
                    are invalid in normal mode.  */
                 if ((oldreg ^ env->mmuregs[reg])
@@ -1107,9 +1120,18 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
                            sizeof(env->dcache_overlay));
                 }
                 break;
-            case 1: /* Context Table Pointer Register */
+            case 1: /* Context Table Pointer Register */ {
+                static int ctpr_trace_count;
                 env->mmuregs[reg] = val & env->def.mmu_ctpr_mask;
+                if (ctpr_trace_count < 20) {
+                    fprintf(stderr, "CTPR=%08x (PA=%09llx) PC=%08x\n",
+                            env->mmuregs[reg],
+                            (unsigned long long)((hwaddr)env->mmuregs[reg] << 4),
+                            env->pc);
+                    ctpr_trace_count++;
+                }
                 break;
+            }
             case 2: /* Context Register */
                 env->mmuregs[reg] = val & env->def.mmu_cxr_mask;
                 if (oldreg != env->mmuregs[reg]) {

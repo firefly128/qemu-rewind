@@ -20,6 +20,9 @@
 #include "qemu/osdep.h"
 #include "qemu/main-loop.h"
 #include "cpu.h"
+
+/* L1 page table descriptor overlay backing (defined in hw/sparc/sun4m.c) */
+extern uint8_t l1_ptd_backing[16];
 #include "trace.h"
 #include "accel/tcg/cpu-ldst.h"
 #include "exec/log.h"
@@ -127,6 +130,23 @@ void sparc_cpu_do_interrupt(CPUState *cs)
             env->def.features & CPU_FEATURE_TA0_SHUTDOWN) {
             qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
         } else {
+            /* Dump MMU state and L1 overlay before abort */
+            {
+                uint32_t l1_0, l1_1, l1_2, l1_3;
+                memcpy(&l1_0, &l1_ptd_backing[0], 4);
+                memcpy(&l1_1, &l1_ptd_backing[4], 4);
+                memcpy(&l1_2, &l1_ptd_backing[8], 4);
+                memcpy(&l1_3, &l1_ptd_backing[12], 4);
+                fprintf(stderr, "CRASH-DUMP mmuregs[0]=%08x [1]=%08x [2]=%08x "
+                        "TBR=%08x\n"
+                        "  L1[0]=%08x L1[1]=%08x L1[2]=%08x L1[3]=%08x\n"
+                        "  trap=%02x PC=%08x nPC=%08x\n",
+                        env->mmuregs[0], env->mmuregs[1], env->mmuregs[2],
+                        env->tbr,
+                        be32_to_cpu(l1_0), be32_to_cpu(l1_1),
+                        be32_to_cpu(l1_2), be32_to_cpu(l1_3),
+                        cs->exception_index, env->pc, env->npc);
+            }
             cpu_abort(cs, "Trap 0x%02x (%s) while interrupts disabled, "
                           "Error state",
                       cs->exception_index, excp_name_str(cs->exception_index));

@@ -909,7 +909,7 @@ static void dummy_fdc_tc(void *opaque, int irq, int level)
  * because the slow-path dispatch serialises store/read pairs across
  * vCPUs and guarantees that address_space_ldl_be resolves identically
  * to the TCG TLB store path. */
-static uint8_t l1_ptd_backing[16];
+uint8_t l1_ptd_backing[16];
 
 static void l1_ptd_write(void *opaque, hwaddr addr,
                           uint64_t val, unsigned size)
@@ -917,7 +917,7 @@ static void l1_ptd_write(void *opaque, hwaddr addr,
     static int l1wr_count;
     uint32_t store_value = cpu_to_be32((uint32_t)val);
     memcpy(&l1_ptd_backing[addr & 0xf], &store_value, size);
-    if (l1wr_count < 30) {
+    if (l1wr_count < 200) {
         fprintf(stderr, "L1-WR PA=%04llx val=%08x size=%d\n",
                 (unsigned long long)(0x2000 + (addr & 0xf)),
                 (uint32_t)val, size);
@@ -931,7 +931,7 @@ static uint64_t l1_ptd_read(void *opaque, hwaddr addr,
     static int l1rd_count;
     uint32_t raw_value;
     memcpy(&raw_value, &l1_ptd_backing[addr & ~3], 4);
-    if (l1rd_count < 30) {
+    if (l1rd_count < 200) {
         fprintf(stderr, "L1-RD PA=%04llx ret=%08x\n",
                 (unsigned long long)(0x2000 + (addr & ~3)),
                 be32_to_cpu(raw_value));

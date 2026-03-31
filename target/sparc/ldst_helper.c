@@ -1108,7 +1108,7 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
                     (val & 0x00ffffff);
                 {
                     static int mmuctrl_trace_count;
-                    if (mmuctrl_trace_count < 80) {
+                    if (mmuctrl_trace_count < 200) {
                         fprintf(stderr, "MMUCTRL old=%08x new=%08x "
                                 "(E=%d NF=%d BM=%d) PC=%08x\n",
                                 oldreg, env->mmuregs[reg],

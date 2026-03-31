@@ -901,7 +901,8 @@ static const TypeInfo ram_info = {
 };
 
 static void cpu_devinit(const char *cpu_type, unsigned int id,
-                        uint64_t prom_addr, qemu_irq **cpu_irqs)
+                        uint64_t prom_addr, qemu_irq **cpu_irqs,
+                        bool real_bios)
 {
     SPARCCPU *cpu;
     CPUSPARCState *env;
@@ -910,11 +911,12 @@ static void cpu_devinit(const char *cpu_type, unsigned int id,
     env = &cpu->env;
 
     qemu_register_reset(sun4m_cpu_reset, cpu);
-    /* When running a real OBP ROM, all CPUs must start simultaneously —
-     * the firmware's reset vector sorts out boot vs secondary paths
-     * based on each CPU's MID.  OpenBIOS-based boots (the default)
-     * still need secondary CPUs powered off until start_cpu(). */
-    object_property_set_bool(OBJECT(cpu), "start-powered-off", false,
+    /* When running a real OBP ROM (-bios), all CPUs must start
+     * simultaneously — the firmware's reset vector sorts out boot vs
+     * secondary paths based on each CPU's MID.  OpenBIOS-based boots
+     * (the default) need secondary CPUs powered off until start_cpu(). */
+    object_property_set_bool(OBJECT(cpu), "start-powered-off",
+                             real_bios ? false : (id != 0),
                              &error_abort);
     qdev_realize_and_unref(DEVICE(cpu), NULL, &error_fatal);
     cpu_sparc_set_id(env, id);
@@ -995,8 +997,10 @@ static void sun4m_hw_init(MachineState *machine)
     }
 
     /* init CPUs */
+    bool real_bios = (machine->firmware != NULL);
     for(i = 0; i < smp_cpus; i++) {
-        cpu_devinit(machine->cpu_type, i, hwdef->slavio_base, &cpu_irqs[i]);
+        cpu_devinit(machine->cpu_type, i, hwdef->slavio_base, &cpu_irqs[i],
+                    real_bios);
     }
 
     for (i = smp_cpus; i < MAX_CPUS; i++)

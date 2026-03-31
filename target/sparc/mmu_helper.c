@@ -295,10 +295,11 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
      */
     if (!error_code && rw != 2) {
         uint32_t entry_number = env->dtlb_fill_next;
-        uint32_t diag_row = entry_number / 4;
-        uint32_t diag_sub = entry_number % 4;
-        int field5_idx = diag_row * 64 + (5 * 16 + diag_sub) % 64;
-        int field6_idx = diag_row * 64 + (6 * 16 + diag_sub) % 64;
+        /* Each D-TLB entry occupies its own row (64 words).
+         * Field 5 (PTP) → sub_part = (5*16) % 64 = 16
+         * Field 6 (VA tag) → sub_part = (6*16) % 64 = 32 */
+        int field5_idx = entry_number * 64 + 16;
+        int field6_idx = entry_number * 64 + 32;
 
         /* Field 6: VA tag */
         env->tlb_diag_tag[field6_idx] = address & 0xfffff000;
@@ -331,7 +332,7 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
             env->dtlb_ptp_skip++;
         }
 
-        if (entry_number < 63) {
+        if (entry_number < 15) {
             env->dtlb_fill_next = entry_number + 1;
         }
         fprintf(stderr, "[TLB-FILL] va=0x%08x entry=%u tag[%d]=0x%08x "

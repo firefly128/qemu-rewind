@@ -641,13 +641,21 @@ uint64_t helper_ld_asi(CPUSPARCState *env, target_ulong addr,
         case 0x01c00f00: /* MBus port address register */
             if (size == 8) {
                 ret = env->mxccregs[7];
+            } else if (size == 4) {
+                ret = (uint32_t)(env->mxccregs[7] >> 32);
             } else {
                 qemu_log_mask(LOG_UNIMP,
                               "%08x: unimplemented access size: %d\n", addr,
                               size);
             }
+            fprintf(stderr, "[MXCC-RD] addr=0x%08x sz=%d mxccregs[7]=0x%016llx "
+                    "ret=0x%08llx (MID=%d)\n",
+                    addr, size, (unsigned long long)env->mxccregs[7],
+                    (unsigned long long)ret,
+                    (int)((env->mxccregs[7] >> 24) & 0xf));
             break;
         default:
+            fprintf(stderr, "[MXCC-RD] UNKNOWN addr=0x%08x sz=%d\n", addr, size);
             qemu_log_mask(LOG_UNIMP,
                           "%08x: unimplemented address, size: %d\n", addr,
                           size);
@@ -759,15 +767,18 @@ uint64_t helper_ld_asi(CPUSPARCState *env, target_ulong addr,
                                        MEMTXATTRS_UNSPECIFIED, &result);
             break;
         }
-        if ((access_addr >> 20) == 0xff00 ||
+        if ((access_addr >> 28) >= 0xE ||
+            (access_addr >> 20) == 0xff00 ||
             (access_addr >> 20) == 0x0000) {
-            fprintf(stderr, "[EXT-BYPASS-RD] ASI=0x%02x PA=0x%llx sz=%d "
-                    "val=0x%08llx\n", asi,
+            fprintf(stderr, "[EXT-BYPASS-RD] ASI=0x%02x PA=0x%09llx sz=%d "
+                    "val=0x%08llx result=%d\n", asi,
                     (unsigned long long)access_addr, size,
-                    (unsigned long long)ret);
+                    (unsigned long long)ret, result);
         }
 
         if (result != MEMTX_OK) {
+            fprintf(stderr, "[BUS-ERROR-RD] ASI=0x%02x PA=0x%09llx sz=%d\n",
+                    asi, (unsigned long long)access_addr, size);
             sparc_raise_mmu_fault(cs, access_addr, false, false, false,
                                   size, GETPC());
         }
@@ -1253,9 +1264,10 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
             MemTxResult result;
             hwaddr access_addr = (hwaddr)addr | ((hwaddr)(asi & 0xf) << 32);
 
-            if ((access_addr >> 20) == 0xff00 ||
+            if ((access_addr >> 28) >= 0xE ||
+                (access_addr >> 20) == 0xff00 ||
                 (access_addr >> 20) == 0x0000) {
-                fprintf(stderr, "[EXT-BYPASS-WR] ASI=0x%02x PA=0x%llx sz=%d "
+                fprintf(stderr, "[EXT-BYPASS-WR] ASI=0x%02x PA=0x%09llx sz=%d "
                         "val=0x%08llx\n", asi,
                         (unsigned long long)access_addr, size,
                         (unsigned long long)val);
@@ -1280,6 +1292,8 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
                 break;
             }
             if (result != MEMTX_OK) {
+                fprintf(stderr, "[BUS-ERROR-WR] ASI=0x%02x PA=0x%09llx sz=%d\n",
+                        asi, (unsigned long long)access_addr, size);
                 sparc_raise_mmu_fault(cs, access_addr, true, false, false,
                                       size, GETPC());
             }

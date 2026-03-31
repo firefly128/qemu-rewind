@@ -75,6 +75,7 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
 {
     int access_perms = 0;
     hwaddr pde_ptr;
+    hwaddr l1_pde_ptr = 0; /* Saved L1-level pde_ptr for TLB diagnostic fill */
     uint32_t pde;
     int error_code = 0, is_dirty, is_user;
     unsigned long page_offset;
@@ -196,6 +197,7 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
         return 4 << 2;
     case 1: /* L0 PDE */
         pde_ptr = ((address >> 22) & ~3) + ((hwaddr)(pde & ~3) << 4);
+        l1_pde_ptr = pde_ptr; /* Save for TLB diagnostic PTP scan */
         pde = address_space_ldl_be(cs->as, pde_ptr,
                                    MEMTXATTRS_UNSPECIFIED, &result);
         if ((address & 0xfff00000) == 0) {
@@ -344,55 +346,63 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
     /* Populate TLB diagnostic arrays (SuperSPARC unified TLB fill).
      *
      * The SuperSPARC-II has a unified 64-entry fully-associative TLB.
-     * On a TLB miss the hardware walker fills an entry with the PTE.
+     * On a TLB miss the hardware walker fills an entry.
      *
-     * Two parallel diagnostic arrays are populated:
-     *   ASI 0x05 (tlb_diag_data): Field 6 = PTE from the walk.
-     *   ASI 0x06 (tlb_diag_tag):  Field 5 = adjacent PTP, Field 6 = VA tag.
+     * Diagnostic arrays populated:
+     *   ASI 0x05 (tlb_diag_data): Field 5 = L1 PTP from the walk.
+     *   ASI 0x06 (tlb_diag_tag):  Field 5 = L1 PTP, Field 6 = VA tag.
      *
      * Diagnostic index per entry E:
      *   Field F → idx = E*64 + (F*16) % 64
      *   Field 5 → sub=16,  Field 6 → sub=32.
      *
+     * The PTP scan reads the 4-entry (16-byte) L1 cache line that was
+     * accessed during the walk.  All PTPs in that line are candidates;
+     * the Nth one (N = dtlb_ptp_skip) is deposited.
+     *
      * On real hardware the VIVT I-cache prevents most I-fetch TLB misses
-     * (flush only invalidates the TLB, not the I-cache).  QEMU has no
-     * I-cache model, so I-fetch misses are over-counted.  To compensate,
-     * I-fetch fills write to the current entry but do NOT advance the
-     * fill counter or PTP skip counter — the subsequent data fill
+     * after a flush.  QEMU has no I-cache model, so I-fetch misses are
+     * over-counted.  I-fetch fills write to the current entry slot but
+     * do NOT advance the fill counter — the subsequent data fill
      * overwrites at the same slot, matching real hardware sequencing.
      */
     if (!error_code) {
         uint32_t entry_number = env->dtlb_fill_next;
-        int field5_idx = entry_number * 64 + 16;
-        int field6_idx = entry_number * 64 + 32;
+        int entry_base = entry_number * 64;
+        int field5_idx = entry_base + 16;
+        int field6_idx = entry_base + 32;
+        int clear_index;
 
-        /* ASI 0x05 field 6: PTE from the page table walk */
-        env->tlb_diag_data[field6_idx] = pde;
+        /* Clear the entire entry row — on real hardware a TLB fill
+         * replaces the full entry, so stale fields must not persist. */
+        for (clear_index = 0; clear_index < 64; clear_index++) {
+            env->tlb_diag_data[entry_base + clear_index] = 0;
+            env->tlb_diag_tag[entry_base + clear_index] = 0;
+        }
 
         /* ASI 0x06 field 6: VA tag */
         env->tlb_diag_tag[field6_idx] = address & 0xfffff000;
 
-        /* Field 5: adjacent PTP from the same 16-byte block.
-         * The walker already read one entry at pde_ptr; scan the other
-         * 3 entries in the same 16-byte aligned group and deposit the
-         * Nth PDP (type 1) we find, where N = dtlb_ptp_skip. */
-        {
-            hwaddr block_base = pde_ptr & ~0xfULL;
-            int adjacent_index;
+        /* Field 5: PTP from the L1 cache line read during the walk.
+         * Scan all 4 entries in the 16-byte aligned block around the
+         * L1 pde_ptr.  Take the Nth PTP (type 1) where N = dtlb_ptp_skip.
+         * This includes the walked entry itself — on real hardware the
+         * entire cache line is fetched. */
+        if (l1_pde_ptr) {
+            hwaddr l1_block_base = l1_pde_ptr & ~0xfULL;
+            int scan_index;
             uint32_t cached_ptp = 0;
             uint32_t pdp_skip_remaining = env->dtlb_ptp_skip;
-            for (adjacent_index = 0; adjacent_index < 4; adjacent_index++) {
-                hwaddr entry_addr = block_base + adjacent_index * 4;
-                if (entry_addr != pde_ptr) {
-                    uint32_t adjacent_entry = address_space_ldl_be(cs->as,
-                        entry_addr, MEMTXATTRS_UNSPECIFIED, NULL);
-                    if ((adjacent_entry & PTE_ENTRYTYPE_MASK) == 1) {
-                        if (pdp_skip_remaining == 0) {
-                            cached_ptp = adjacent_entry;
-                            break;
-                        }
-                        pdp_skip_remaining--;
+            for (scan_index = 0; scan_index < 4; scan_index++) {
+                hwaddr entry_addr = l1_block_base + scan_index * 4;
+                uint32_t l1_entry = address_space_ldl_be(cs->as,
+                    entry_addr, MEMTXATTRS_UNSPECIFIED, NULL);
+                if ((l1_entry & PTE_ENTRYTYPE_MASK) == 1) {
+                    if (pdp_skip_remaining == 0) {
+                        cached_ptp = l1_entry;
+                        break;
                     }
+                    pdp_skip_remaining--;
                 }
             }
             env->tlb_diag_data[field5_idx] = cached_ptp;

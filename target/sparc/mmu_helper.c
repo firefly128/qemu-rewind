@@ -97,7 +97,58 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
         }
         full->phys_addr = address;
         full->prot = PAGE_READ | PAGE_WRITE | PAGE_EXEC;
+
+        /* VIVT D-cache overlay: bypass data accesses go through the
+         * D-cache on SuperSPARC.  Record the VA→PA=VA mapping so that
+         * subsequent MMU-enabled accesses to the same VA page hit the
+         * "cache" and return data from the bypass PA, not the page table
+         * translation. */
+        if (rw != 2) {
+            int dcache_index = (address >> TARGET_PAGE_BITS)
+                               & (SPARC_DCACHE_WAYS - 1);
+            env->dcache_overlay[dcache_index].va_page =
+                address & TARGET_PAGE_MASK;
+            env->dcache_overlay[dcache_index].pa_page =
+                address & TARGET_PAGE_MASK;
+            if ((address & 0xfffff000) == 0x00080000) {
+                fprintf(stderr, "[DCACHE-POP] va=0x%08x idx=%d "
+                        "va_page=0x%08x\n",
+                        (uint32_t)address, dcache_index,
+                        env->dcache_overlay[dcache_index].va_page);
+            }
+        }
+
         return 0;
+    }
+
+    /* VIVT D-cache overlay check: if a bypass access previously loaded
+     * this VA page into the D-cache, return the cached PA instead of
+     * walking the page table.  Only for data accesses (rw != 2) —
+     * the I-cache has its own path. */
+    if (rw != 2) {
+        int dcache_index = (address >> TARGET_PAGE_BITS)
+                           & (SPARC_DCACHE_WAYS - 1);
+        if ((address & 0xfffff000) == 0x00080000) {
+            fprintf(stderr, "[DCACHE-CHK] va=0x%08x idx=%d "
+                    "stored_va=0x%08x want_va=0x%08x match=%d\n",
+                    (uint32_t)address, dcache_index,
+                    env->dcache_overlay[dcache_index].va_page,
+                    (uint32_t)(address & TARGET_PAGE_MASK),
+                    env->dcache_overlay[dcache_index].va_page ==
+                    (uint32_t)(address & TARGET_PAGE_MASK));
+        }
+        if (env->dcache_overlay[dcache_index].va_page ==
+            (address & TARGET_PAGE_MASK)) {
+            full->lg_page_size = TARGET_PAGE_BITS;
+            full->phys_addr = env->dcache_overlay[dcache_index].pa_page
+                              | (address & ~TARGET_PAGE_MASK);
+            full->prot = PAGE_READ | PAGE_WRITE | PAGE_EXEC;
+            fprintf(stderr, "[DCACHE-HIT] va=0x%08x → PA=0x%llx "
+                    "(bypass overlay)\n",
+                    (uint32_t)address,
+                    (unsigned long long)full->phys_addr);
+            return 0;
+        }
     }
 
     *access_index = ((rw & 1) << 2) | (rw & 2) | (is_user ? 0 : 1);

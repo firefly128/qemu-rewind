@@ -519,6 +519,21 @@ struct CPUArchState {
     uint32_t dcache_data[1024];   /* ASI 0x0F: D-cache data diagnostic */
     uint32_t dtlb_fill_next;      /* Next D-TLB entry to fill (0-63) */
     uint32_t dtlb_ptp_skip;       /* Adjacent PTPs already deposited */
+
+    /* VIVT D-cache translation overlay.
+     *
+     * SuperSPARC uses a Virtually Indexed, Virtually Tagged D-cache.
+     * Bypass (ASI 0x20) data accesses go through the D-cache, storing data
+     * at VA=PA.  Subsequent MMU-enabled accesses to the same VA hit the
+     * D-cache, returning the cached data regardless of the page table
+     * mapping.  This array records VA pages loaded by bypass so that
+     * get_physical_address can return PA=VA (the bypass identity mapping)
+     * instead of walking the page table. */
+#define SPARC_DCACHE_WAYS 4096
+    struct {
+        uint32_t va_page; /* VA & ~0xFFF, or 0 if invalid */
+        hwaddr   pa_page; /* PA & ~0xFFF */
+    } dcache_overlay[SPARC_DCACHE_WAYS];
 #endif
     float_status fp_status;
 #if defined(TARGET_SPARC64)

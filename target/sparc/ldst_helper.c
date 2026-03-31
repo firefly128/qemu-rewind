@@ -1025,12 +1025,24 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
             switch (mmulev) {
             case 0: /* flush page */
                 tlb_flush_page(cs, addr & 0xfffff000);
+                /* Invalidate D-cache overlay for this page */
+                {
+                    int dcache_flush_idx = ((addr & 0xfffff000)
+                        >> TARGET_PAGE_BITS) & (SPARC_DCACHE_WAYS - 1);
+                    if (env->dcache_overlay[dcache_flush_idx].va_page ==
+                        (addr & 0xfffff000)) {
+                        env->dcache_overlay[dcache_flush_idx].va_page = 0;
+                    }
+                }
                 break;
             case 1: /* flush segment (256k) */
             case 2: /* flush region (16M) */
             case 3: /* flush context (4G) */
             case 4: /* flush entire */
                 tlb_flush(cs);
+                /* Invalidate entire D-cache overlay */
+                memset(env->dcache_overlay, 0,
+                       sizeof(env->dcache_overlay));
                 break;
             default:
                 break;
@@ -1129,6 +1141,8 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
                 if ((oldreg ^ env->mmuregs[reg])
                     & (MMU_E | MMU_NF | env->def.mmu_bm)) {
                     tlb_flush(cs);
+                    memset(env->dcache_overlay, 0,
+                           sizeof(env->dcache_overlay));
                 }
                 break;
             case 1: /* Context Table Pointer Register */
@@ -1144,6 +1158,8 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
                     /* we flush when the MMU context changes because
                        QEMU has no MMU context support */
                     tlb_flush(cs);
+                    memset(env->dcache_overlay, 0,
+                           sizeof(env->dcache_overlay));
                 }
                 break;
             case 3: /* Synchronous Fault Status Register with Clear */
@@ -1217,10 +1233,20 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
         env->dcache_data[(addr >> 2) & 0x3ff] = val;
         break;
     case ASI_M_FLUSH_PAGE:   /* I/D-cache flush page */
+    {
+        int dcache_flush_idx = ((addr & 0xfffff000) >> TARGET_PAGE_BITS)
+                               & (SPARC_DCACHE_WAYS - 1);
+        if (env->dcache_overlay[dcache_flush_idx].va_page ==
+            (addr & 0xfffff000)) {
+            env->dcache_overlay[dcache_flush_idx].va_page = 0;
+        }
+        break;
+    }
     case ASI_M_FLUSH_SEG:    /* I/D-cache flush segment */
     case ASI_M_FLUSH_REGION: /* I/D-cache flush region */
     case ASI_M_FLUSH_CTX:    /* I/D-cache flush context */
     case ASI_M_FLUSH_USER:   /* I/D-cache flush user */
+        memset(env->dcache_overlay, 0, sizeof(env->dcache_overlay));
         break;
     case 0x21 ... 0x2f: /* MMU passthrough, 0x100000000 to 0xfffffffff */
         {

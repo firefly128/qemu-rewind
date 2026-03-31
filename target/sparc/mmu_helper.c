@@ -92,10 +92,6 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
             full->prot = PAGE_READ | PAGE_EXEC;
             return 0;
         }
-        if ((address & 0xfff00000) == 0 && rw != 2) {
-            fprintf(stderr, "[PHYS] va=0x%08x rw=%d (page fill for bypass access)\n",
-                    (uint32_t)address, rw);
-        }
         full->phys_addr = address;
         full->prot = PAGE_READ | PAGE_WRITE | PAGE_EXEC;
 
@@ -111,12 +107,6 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
                 address & TARGET_PAGE_MASK;
             env->dcache_overlay[dcache_index].pa_page =
                 address & TARGET_PAGE_MASK;
-            if ((address & 0xfffff000) == 0x00080000) {
-                fprintf(stderr, "[DCACHE-POP] va=0x%08x idx=%d "
-                        "va_page=0x%08x\n",
-                        (uint32_t)address, dcache_index,
-                        env->dcache_overlay[dcache_index].va_page);
-            }
         }
 
         return 0;
@@ -129,25 +119,12 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
     if (rw != 2) {
         int dcache_index = (address >> TARGET_PAGE_BITS)
                            & (SPARC_DCACHE_WAYS - 1);
-        if ((address & 0xfffff000) == 0x00080000) {
-            fprintf(stderr, "[DCACHE-CHK] va=0x%08x idx=%d "
-                    "stored_va=0x%08x want_va=0x%08x match=%d\n",
-                    (uint32_t)address, dcache_index,
-                    env->dcache_overlay[dcache_index].va_page,
-                    (uint32_t)(address & TARGET_PAGE_MASK),
-                    env->dcache_overlay[dcache_index].va_page ==
-                    (uint32_t)(address & TARGET_PAGE_MASK));
-        }
         if (env->dcache_overlay[dcache_index].va_page ==
             (address & TARGET_PAGE_MASK)) {
             full->lg_page_size = TARGET_PAGE_BITS;
             full->phys_addr = env->dcache_overlay[dcache_index].pa_page
                               | (address & ~TARGET_PAGE_MASK);
             full->prot = PAGE_READ | PAGE_WRITE | PAGE_EXEC;
-            fprintf(stderr, "[DCACHE-HIT] va=0x%08x → PA=0x%llx "
-                    "(bypass overlay)\n",
-                    (uint32_t)address,
-                    (unsigned long long)full->phys_addr);
             return 0;
         }
     }
@@ -162,27 +139,6 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
     pde_ptr = ((hwaddr)env->mmuregs[1] << 4) + (env->mmuregs[2] << 2);
     pde = address_space_ldl_be(cs->as, pde_ptr,
                                MEMTXATTRS_UNSPECIFIED, &result);
-    if ((address & 0xfff00000) == 0) {
-        fprintf(stderr, "[WALK] va=0x%08x rw=%d CTP=0x%08x ctx=%d "
-                "pde_ptr=0x%llx ctx_pde=0x%08x (type=%d)\n",
-                (uint32_t)address, rw,
-                env->mmuregs[1], env->mmuregs[2],
-                (unsigned long long)pde_ptr, pde, pde & 3);
-        /* If ctx entry is invalid (type=0), dump all 16 entries */
-        if ((pde & 3) == 0) {
-            hwaddr ctx_base = (hwaddr)env->mmuregs[1] << 4;
-            int context_idx;
-            fprintf(stderr, "[WALK] ctx table dump at 0x%llx:\n",
-                    (unsigned long long)ctx_base);
-            for (context_idx = 0; context_idx < 16; context_idx++) {
-                uint32_t entry = address_space_ldl_be(cs->as,
-                    ctx_base + context_idx * 4,
-                    MEMTXATTRS_UNSPECIFIED, NULL);
-                fprintf(stderr, "  ctx[%d]=0x%08x (type=%d)\n",
-                        context_idx, entry, entry & 3);
-            }
-        }
-    }
     if (result != MEMTX_OK) {
         return 4 << 2; /* Translation fault, L = 0 */
     }
@@ -200,36 +156,6 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
         l1_pde_ptr = pde_ptr; /* Save for TLB diagnostic PTP scan */
         pde = address_space_ldl_be(cs->as, pde_ptr,
                                    MEMTXATTRS_UNSPECIFIED, &result);
-        if ((address & 0xfff00000) == 0) {
-            /* pde_ptr here points to the specific L1 entry that was read.
-             * Compute the L1 table base from pde_ptr by masking off the
-             * entry index (which is in the low bits from the VA shift). */
-            hwaddr l1_table_base = pde_ptr & ~0x3ff; /* 256 entries × 4 = 1024 */
-            fprintf(stderr, "[WALK]   L1 pde_ptr=0x%llx pde=0x%08x (type=%d)\n",
-                    (unsigned long long)pde_ptr, pde, pde & 3);
-            /* Dump first 4 L1 entries from the actual table base */
-            {
-                int dump_index;
-                fprintf(stderr, "[WALK]   L1@0x%llx[0..3]:",
-                        (unsigned long long)l1_table_base);
-                for (dump_index = 0; dump_index < 4; dump_index++) {
-                    uint32_t entry = address_space_ldl_be(cs->as,
-                        l1_table_base + dump_index * 4,
-                        MEMTXATTRS_UNSPECIFIED, NULL);
-                    fprintf(stderr, " [%d]=0x%08x", dump_index, entry);
-                }
-                fprintf(stderr, "\n");
-                /* Dump first word at PA 0x3000-0x6000 to see L2/L3 tables */
-                fprintf(stderr, "[WALK]   RAM dumps:");
-                for (dump_index = 3; dump_index <= 6; dump_index++) {
-                    uint32_t v = address_space_ldl_be(cs->as,
-                        dump_index * 0x1000,
-                        MEMTXATTRS_UNSPECIFIED, NULL);
-                    fprintf(stderr, " @0x%x=0x%08x", dump_index * 0x1000, v);
-                }
-                fprintf(stderr, "\n");
-            }
-        }
         if (result != MEMTX_OK) {
             return (1 << 8) | (4 << 2); /* Translation fault, L = 1 */
         }
@@ -242,19 +168,8 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
             return (1 << 8) | (4 << 2);
         case 1: /* L1 PDE */
             pde_ptr = ((address & 0xfc0000) >> 16) + ((hwaddr)(pde & ~3) << 4);
-            {
-                uint32_t l1_pde_saved = pde; /* the L1 PDP we just traversed */
-                pde = address_space_ldl_be(cs->as, pde_ptr,
-                                           MEMTXATTRS_UNSPECIFIED, &result);
-                fprintf(stderr, "[WALK-L2] va=0x%08x L1-PDP=0x%08x "
-                        "L2@0x%llx L2-pde=0x%08x (type=%d)\n",
-                        (uint32_t)address, l1_pde_saved,
-                        (unsigned long long)pde_ptr, pde, pde & 3);
-            }
-            if ((address & 0xfff00000) == 0) {
-                fprintf(stderr, "[WALK]   L2 pde_ptr=0x%llx pde=0x%08x (type=%d)\n",
-                        (unsigned long long)pde_ptr, pde, pde & 3);
-            }
+            pde = address_space_ldl_be(cs->as, pde_ptr,
+                                       MEMTXATTRS_UNSPECIFIED, &result);
             if (result != MEMTX_OK) {
                 return (2 << 8) | (4 << 2); /* Translation fault, L = 2 */
             }
@@ -327,21 +242,6 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
     /* Even if large ptes, we map only one 4KB page in the cache to
        avoid filling it too fast */
     full->phys_addr = ((hwaddr)(pde & PTE_ADDR_MASK) << 4) + page_offset;
-
-    if ((address & 0xfffff000) == 0x00080000) {
-        uint32_t probe_val = address_space_ldl_be(cs->as, full->phys_addr,
-            MEMTXATTRS_UNSPECIFIED, NULL);
-        fprintf(stderr, "[WALK-PA] va=0x%08x rw=%d → PA=0x%llx "
-                "data@PA=0x%08x pde=0x%08x prot=%x\n",
-                (uint32_t)address, rw,
-                (unsigned long long)full->phys_addr,
-                probe_val, pde, full->prot);
-    }
-
-    if (error_code) {
-        fprintf(stderr, "[WALK-ERR] va=0x%08x rw=%d err=0x%x\n",
-                (uint32_t)address, rw, error_code);
-    }
 
     /* Populate TLB diagnostic arrays (SuperSPARC unified TLB fill).
      *
@@ -416,12 +316,6 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
             }
         }
 
-        fprintf(stderr, "[TLB-FILL] va=0x%08x rw=%d entry=%u data[%d]=0x%08x "
-                "data[%d]=0x%08x tag[%d]=0x%08x\n",
-                (uint32_t)address, rw, entry_number,
-                field5_idx, env->tlb_diag_data[field5_idx],
-                field6_idx, env->tlb_diag_data[field6_idx],
-                field6_idx, env->tlb_diag_tag[field6_idx]);
     }
 
     return error_code;
@@ -499,12 +393,6 @@ target_ulong mmu_probe(CPUSPARCState *env, target_ulong address, int mmulev)
         (env->mmuregs[2] << 2);
     pde = address_space_ldl_be(cs->as, pde_ptr,
                                MEMTXATTRS_UNSPECIFIED, &result);
-    fprintf(stderr, "[PROBE] va=0x%08x lev=%d ctxbase=0x%llx ctx=%d "
-            "pde_ptr=0x%llx pde=0x%08x res=%d\n",
-            (uint32_t)address, mmulev,
-            (unsigned long long)((hwaddr)env->mmuregs[1] << 4),
-            env->mmuregs[2],
-            (unsigned long long)pde_ptr, pde, result);
     if (result != MEMTX_OK) {
         return 0;
     }

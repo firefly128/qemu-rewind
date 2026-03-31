@@ -467,12 +467,9 @@ static void sparc_raise_mmu_fault(CPUState *cs, hwaddr addr,
     }
 
     if ((env->mmuregs[0] & MMU_E) && !(env->mmuregs[0] & MMU_NF)) {
-        int tt = is_exec ? TT_CODE_ACCESS : TT_DATA_ACCESS;
-        fprintf(stderr, "[MMU-FAULT] %s pa=" HWADDR_FMT_plx " pc=%08x "
-                "mmuregs[0]=%08x asi=%d tt=0x%02x\n",
-                is_exec ? "exec" : is_write ? "write" : "read",
-                addr, (uint32_t)env->pc, env->mmuregs[0], is_asi, tt);
-        cpu_raise_exception_ra(env, tt, retaddr);
+        cpu_raise_exception_ra(env,
+                               is_exec ? TT_CODE_ACCESS : TT_DATA_ACCESS,
+                               retaddr);
     }
 
     /*
@@ -648,14 +645,8 @@ uint64_t helper_ld_asi(CPUSPARCState *env, target_ulong addr,
                               "%08x: unimplemented access size: %d\n", addr,
                               size);
             }
-            fprintf(stderr, "[MXCC-RD] addr=0x%08x sz=%d mxccregs[7]=0x%016llx "
-                    "ret=0x%08llx (MID=%d)\n",
-                    addr, size, (unsigned long long)env->mxccregs[7],
-                    (unsigned long long)ret,
-                    (int)((env->mxccregs[7] >> 24) & 0xf));
             break;
         default:
-            fprintf(stderr, "[MXCC-RD] UNKNOWN addr=0x%08x sz=%d\n", addr, size);
             qemu_log_mask(LOG_UNIMP,
                           "%08x: unimplemented address, size: %d\n", addr,
                           size);
@@ -703,45 +694,31 @@ uint64_t helper_ld_asi(CPUSPARCState *env, target_ulong addr,
     {
         int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
         ret = env->tlb_diag_data[tlb_idx];
-        fprintf(stderr, "[DIAG-RD] ASI=0x05 TLB-data addr=0x%08x idx=%d val=0x%08x\n",
-                (uint32_t)addr, tlb_idx, (uint32_t)ret);
         break;
     }
     case ASI_M_DIAGS:   /* MMU TLB tag diagnostic */
     {
         int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
         ret = env->tlb_diag_tag[tlb_idx];
-        fprintf(stderr, "[DIAG-RD] ASI=0x06 TLB-tag  addr=0x%08x idx=%d val=0x%08x\n",
-                (uint32_t)addr, tlb_idx, (uint32_t)ret);
         break;
     }
     case ASI_M_IODIAG:  /* I/O TLB diagnostic */
     {
         int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
         ret = env->io_tlb_diag[tlb_idx];
-        fprintf(stderr, "[DIAG-RD] ASI=0x07 IO-TLB   addr=0x%08x idx=%d val=0x%08x\n",
-                (uint32_t)addr, tlb_idx, (uint32_t)ret);
         break;
     }
     case ASI_M_TXTC_TAG:   /* I-cache tag diagnostic */
         ret = env->icache_tag[(addr >> 2) & 0x3ff];
-        fprintf(stderr, "[DIAG-RD] ASI=0x0C I$-tag   addr=0x%08x idx=%d val=0x%08x\n",
-                (uint32_t)addr, (int)((addr >> 2) & 0x3ff), (uint32_t)ret);
         break;
     case ASI_M_TXTC_DATA:  /* I-cache data diagnostic */
         ret = env->icache_data[(addr >> 2) & 0x3ff];
-        fprintf(stderr, "[DIAG-RD] ASI=0x0D I$-data  addr=0x%08x idx=%d val=0x%08x\n",
-                (uint32_t)addr, (int)((addr >> 2) & 0x3ff), (uint32_t)ret);
         break;
     case ASI_M_DATAC_TAG:  /* D-cache tag diagnostic */
         ret = env->dcache_tag[(addr >> 2) & 0x3ff];
-        fprintf(stderr, "[DIAG-RD] ASI=0x0E D$-tag   addr=0x%08x idx=%d val=0x%08x\n",
-                (uint32_t)addr, (int)((addr >> 2) & 0x3ff), (uint32_t)ret);
         break;
     case ASI_M_DATAC_DATA: /* D-cache data diagnostic */
         ret = env->dcache_data[(addr >> 2) & 0x3ff];
-        fprintf(stderr, "[DIAG-RD] ASI=0x0F D$-data  addr=0x%08x idx=%d val=0x%08x\n",
-                (uint32_t)addr, (int)((addr >> 2) & 0x3ff), (uint32_t)ret);
         break;
     case 0x21 ... 0x2f: /* MMU passthrough, 0x100000000 to 0xfffffffff */
     {
@@ -767,18 +744,7 @@ uint64_t helper_ld_asi(CPUSPARCState *env, target_ulong addr,
                                        MEMTXATTRS_UNSPECIFIED, &result);
             break;
         }
-        if ((access_addr >> 28) >= 0xE ||
-            (access_addr >> 20) == 0xff00 ||
-            (access_addr >> 20) == 0x0000) {
-            fprintf(stderr, "[EXT-BYPASS-RD] ASI=0x%02x PA=0x%09llx sz=%d "
-                    "val=0x%08llx result=%d\n", asi,
-                    (unsigned long long)access_addr, size,
-                    (unsigned long long)ret, result);
-        }
-
         if (result != MEMTX_OK) {
-            fprintf(stderr, "[BUS-ERROR-RD] ASI=0x%02x PA=0x%09llx sz=%d\n",
-                    asi, (unsigned long long)access_addr, size);
             sparc_raise_mmu_fault(cs, access_addr, false, false, false,
                                   size, GETPC());
         }
@@ -1030,8 +996,6 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
             int mmulev;
 
             mmulev = (addr >> 8) & 15;
-            fprintf(stderr, "[MMU-FLUSH] level=%d addr=0x%08x\n",
-                    mmulev, (uint32_t)addr);
             DPRINTF_MMU("mmu flush level %d\n", mmulev);
             switch (mmulev) {
             case 0: /* flush page */
@@ -1134,19 +1098,6 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
             case 0: /* Control Register */
                 env->mmuregs[reg] = (env->mmuregs[reg] & 0xff000000) |
                     (val & 0x00ffffff);
-                {
-                    /* Dump PA 0x2000 (L1 table) at every CTRL write */
-                    MemTxResult ctrl_mr;
-                    uint32_t l1_val = address_space_ldl_be(cs->as, 0x2000,
-                        MEMTXATTRS_UNSPECIFIED, &ctrl_mr);
-                    fprintf(stderr, "[MMU-REG] CTRL=0x%08x (E=%d NF=%d BM=%d)"
-                            " L1@0x2000=0x%08x\n",
-                            env->mmuregs[0],
-                            !!(env->mmuregs[0] & 1),
-                            !!(env->mmuregs[0] & 2),
-                            !!(env->mmuregs[0] & env->def.mmu_bm),
-                            l1_val);
-                }
                 /* Mappings generated during no-fault mode
                    are invalid in normal mode.  */
                 if ((oldreg ^ env->mmuregs[reg])
@@ -1158,13 +1109,9 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
                 break;
             case 1: /* Context Table Pointer Register */
                 env->mmuregs[reg] = val & env->def.mmu_ctpr_mask;
-                fprintf(stderr, "[MMU-REG] CTP=0x%08x (PA=0x%llx)\n",
-                        env->mmuregs[1],
-                        (unsigned long long)((hwaddr)env->mmuregs[1] << 4));
                 break;
             case 2: /* Context Register */
                 env->mmuregs[reg] = val & env->def.mmu_cxr_mask;
-                fprintf(stderr, "[MMU-REG] CTX=%d\n", env->mmuregs[2]);
                 if (oldreg != env->mmuregs[reg]) {
                     /* we flush when the MMU context changes because
                        QEMU has no MMU context support */
@@ -1202,45 +1149,31 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
     case ASI_M_TLBDIAG: /* MMU TLB data diagnostic */
     {
         int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
-        fprintf(stderr, "[DIAG-WR] ASI=0x05 TLB-data addr=0x%08x idx=%d val=0x%08x\n",
-                (uint32_t)addr, tlb_idx, (uint32_t)val);
         env->tlb_diag_data[tlb_idx] = val;
         break;
     }
     case ASI_M_DIAGS:   /* MMU TLB tag diagnostic */
     {
         int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
-        fprintf(stderr, "[DIAG-WR] ASI=0x06 TLB-tag  addr=0x%08x idx=%d val=0x%08x\n",
-                (uint32_t)addr, tlb_idx, (uint32_t)val);
         env->tlb_diag_tag[tlb_idx] = val;
         break;
     }
     case ASI_M_IODIAG:  /* I/O TLB diagnostic */
     {
         int tlb_idx = ((addr >> 12) & 0xf) * 64 + ((addr >> 4) & 0x3f);
-        fprintf(stderr, "[DIAG-WR] ASI=0x07 IO-TLB   addr=0x%08x idx=%d val=0x%08x\n",
-                (uint32_t)addr, tlb_idx, (uint32_t)val);
         env->io_tlb_diag[tlb_idx] = val;
         break;
     }
     case ASI_M_TXTC_TAG:   /* I-cache tag diagnostic */
-        fprintf(stderr, "[DIAG-WR] ASI=0x0C I$-tag   addr=0x%08x idx=%d val=0x%08x\n",
-                (uint32_t)addr, (int)((addr >> 2) & 0x3ff), (uint32_t)val);
         env->icache_tag[(addr >> 2) & 0x3ff] = val;
         break;
     case ASI_M_TXTC_DATA:  /* I-cache data diagnostic */
-        fprintf(stderr, "[DIAG-WR] ASI=0x0D I$-data  addr=0x%08x idx=%d val=0x%08x\n",
-                (uint32_t)addr, (int)((addr >> 2) & 0x3ff), (uint32_t)val);
         env->icache_data[(addr >> 2) & 0x3ff] = val;
         break;
     case ASI_M_DATAC_TAG:  /* D-cache tag diagnostic */
-        fprintf(stderr, "[DIAG-WR] ASI=0x0E D$-tag   addr=0x%08x idx=%d val=0x%08x\n",
-                (uint32_t)addr, (int)((addr >> 2) & 0x3ff), (uint32_t)val);
         env->dcache_tag[(addr >> 2) & 0x3ff] = val;
         break;
     case ASI_M_DATAC_DATA: /* D-cache data diagnostic */
-        fprintf(stderr, "[DIAG-WR] ASI=0x0F D$-data  addr=0x%08x idx=%d val=0x%08x\n",
-                (uint32_t)addr, (int)((addr >> 2) & 0x3ff), (uint32_t)val);
         env->dcache_data[(addr >> 2) & 0x3ff] = val;
         break;
     case ASI_M_FLUSH_PAGE:   /* I/D-cache flush page */
@@ -1264,14 +1197,6 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
             MemTxResult result;
             hwaddr access_addr = (hwaddr)addr | ((hwaddr)(asi & 0xf) << 32);
 
-            if ((access_addr >> 28) >= 0xE ||
-                (access_addr >> 20) == 0xff00 ||
-                (access_addr >> 20) == 0x0000) {
-                fprintf(stderr, "[EXT-BYPASS-WR] ASI=0x%02x PA=0x%09llx sz=%d "
-                        "val=0x%08llx\n", asi,
-                        (unsigned long long)access_addr, size,
-                        (unsigned long long)val);
-            }
             switch (size) {
             case 1:
                 address_space_stb(cs->as, access_addr, val,
@@ -1292,8 +1217,6 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
                 break;
             }
             if (result != MEMTX_OK) {
-                fprintf(stderr, "[BUS-ERROR-WR] ASI=0x%02x PA=0x%09llx sz=%d\n",
-                        asi, (unsigned long long)access_addr, size);
                 sparc_raise_mmu_fault(cs, access_addr, true, false, false,
                                       size, GETPC());
             }
@@ -1449,8 +1372,6 @@ uint64_t helper_ld_asi(CPUSPARCState *env, target_ulong addr,
         g_assert_not_reached();
 
     default:
-        fprintf(stderr, "[ASI-TRAP] unhandled READ asi=0x%02x addr=0x%08x size=%d\n",
-                asi, (uint32_t)addr, size);
         cpu_raise_exception_ra(env, TT_DATA_ACCESS, GETPC());
     }
 
@@ -1516,8 +1437,6 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, target_ulong val,
     case ASI_PNFL: /* Primary no-fault LE, RO */
     case ASI_SNFL: /* Secondary no-fault LE, RO */
     default:
-        fprintf(stderr, "[ASI-TRAP] unhandled WRITE asi=0x%02x addr=0x%08x val=0x%08x size=%d\n",
-                asi, (uint32_t)addr, (uint32_t)val, size);
         cpu_raise_exception_ra(env, TT_DATA_ACCESS, GETPC());
     }
 }

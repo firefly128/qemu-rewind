@@ -180,9 +180,6 @@ static void nvram_save_on_stop(void *opaque, bool running, RunState state)
     for (i = 0; i < NVRAM_PERSIST_SIZE; i++) {
         buf[i] = (k->read)(nvram_persist_dev, i);
     }
-    fprintf(stderr, "[NVRAM] save-on-stop (state=%d): saving %d bytes, "
-            "cksum bytes: %02x %02x\n",
-            state, NVRAM_PERSIST_SIZE, buf[0], buf[1]);
     g_file_set_contents(nvram_persist_path, (const gchar *)buf,
                         NVRAM_PERSIST_SIZE, NULL);
 }
@@ -197,7 +194,6 @@ static void nvram_init(Nvram *nvram, uint8_t *macaddr,
     uint8_t image[NVRAM_PERSIST_SIZE];
     NvramClass *k = NVRAM_GET_CLASS(nvram);
     const char *nvram_file = getenv("QEMU_NVRAM_FILE");
-    int loaded = 0;
 
     memset(image, '\0', sizeof(image));
 
@@ -205,20 +201,10 @@ static void nvram_init(Nvram *nvram, uint8_t *macaddr,
     if (nvram_file && nvram_file[0]) {
         gchar *data = NULL;
         gsize len = 0;
-        fprintf(stderr, "[NVRAM] loading from %s\n", nvram_file);
         if (g_file_get_contents(nvram_file, &data, &len, NULL)) {
-            fprintf(stderr, "[NVRAM] file size = %lu bytes\n", (unsigned long)len);
             if (len <= sizeof(image)) {
                 memcpy(image, data, len);
-                loaded = 1;
-                fprintf(stderr, "[NVRAM] loaded OK, cksum bytes: %02x %02x\n",
-                        image[0], image[1]);
-            } else {
-                fprintf(stderr, "[NVRAM] file too large (%lu > %lu), skipping\n",
-                        (unsigned long)len, (unsigned long)sizeof(image));
             }
-        } else {
-            fprintf(stderr, "[NVRAM] file not found or unreadable\n");
         }
         g_free(data);
 
@@ -228,11 +214,6 @@ static void nvram_init(Nvram *nvram, uint8_t *macaddr,
             nvram_persist_dev = nvram;
             qemu_add_vm_change_state_handler(nvram_save_on_stop, NULL);
         }
-    }
-
-    if (!loaded) {
-        fprintf(stderr, "[NVRAM] no file loaded — NVRAM will be zeroed "
-                "(firmware will init defaults)\n");
     }
 
     /* ALWAYS write the IDPROM (16 bytes at offset 0x1FD8).
@@ -264,18 +245,8 @@ static void nvram_init(Nvram *nvram, uint8_t *macaddr,
      * writes its own checksum, and our save-on-stop handler
      * persists the result for subsequent boots. */
 
-    fprintf(stderr, "[NVRAM] writing %d bytes to device\n", NVRAM_PERSIST_SIZE);
     for (i = 0; i < NVRAM_PERSIST_SIZE; i++) {
         (k->write)(nvram, i, image[i]);
-    }
-
-    /* Readback verify first 2 bytes */
-    {
-        uint8_t v0 = (k->read)(nvram, 0);
-        uint8_t v1 = (k->read)(nvram, 1);
-        fprintf(stderr, "[NVRAM] readback: bytes[0,1] = %02x %02x (expected %02x %02x) %s\n",
-                v0, v1, image[0], image[1],
-                (v0 == image[0] && v1 == image[1]) ? "OK" : "MISMATCH!");
     }
 }
 
@@ -928,48 +899,6 @@ static void dummy_fdc_tc(void *opaque, int irq, int level)
 {
 }
 
-/* DEBUG: L1 page-table write watchpoint --------------------------------- */
-static uint8_t l1_watch_backing[16];   /* 4 × uint32_t L1 entries */
-
-static void l1_watch_write(void *opaque, hwaddr addr,
-                           uint64_t val, unsigned size)
-{
-    unsigned int entry_index = (unsigned int)(addr >> 2);
-    uint32_t old_value;
-    memcpy(&old_value, &l1_watch_backing[addr & ~3], 4);
-    /* store big-endian */
-    uint32_t store_value = cpu_to_be32((uint32_t)val);
-    memcpy(&l1_watch_backing[addr & 0xf], &store_value, size);
-    fprintf(stderr, "[L1-WATCH] WRITE PA=0x%04llx L1[%u] old=0x%08x "
-            "new=0x%08x (ET=%d)\n",
-            (unsigned long long)(0x2000 + addr), entry_index,
-            be32_to_cpu(old_value), (uint32_t)val,
-            (int)(val & 3));
-}
-
-static uint64_t l1_watch_read(void *opaque, hwaddr addr,
-                              unsigned size)
-{
-    uint32_t raw_value;
-    memcpy(&raw_value, &l1_watch_backing[addr & ~3], 4);
-    uint32_t host_value = be32_to_cpu(raw_value);
-    fprintf(stderr, "[L1-WATCH] READ  PA=0x%04llx L1[%u] = 0x%08x (ET=%d)\n",
-            (unsigned long long)(0x2000 + addr), (unsigned int)(addr >> 2),
-            host_value, (int)(host_value & 3));
-    return host_value;
-}
-
-static const MemoryRegionOps l1_watch_ops = {
-    .read = l1_watch_read,
-    .write = l1_watch_write,
-    .endianness = DEVICE_BIG_ENDIAN,
-    .valid = {
-        .min_access_size = 4,
-        .max_access_size = 4,
-    },
-};
-/* END DEBUG ------------------------------------------------------------- */
-
 static void sun4m_hw_init(MachineState *machine)
 {
     const struct sun4m_hwdef *hwdef = SUN4M_MACHINE_GET_CLASS(machine)->hwdef;
@@ -1020,34 +949,6 @@ static void sun4m_hw_init(MachineState *machine)
 
     prom_init(hwdef->slavio_base, machine->firmware);
 
-    /* DEBUG: verify PROM and main RAM writability */
-    {
-        MemTxResult txr;
-        uint32_t val;
-        hwaddr prom_test_addr = hwdef->slavio_base + 0x80000;
-        hwaddr ram_test_addr = 0x2000;
-
-        /* Test PROM write-readback at offset 0x80000 */
-        address_space_stl_be(&address_space_memory, prom_test_addr,
-                             0xDEADBEEF, MEMTXATTRS_UNSPECIFIED, &txr);
-        val = address_space_ldl_be(&address_space_memory, prom_test_addr,
-                                   MEMTXATTRS_UNSPECIFIED, &txr);
-        fprintf(stderr, "[PROM-TEST] write 0xDEADBEEF to 0x%llx, "
-                "readback=0x%08x (%s)\n",
-                (unsigned long long)prom_test_addr, val,
-                val == 0xDEADBEEF ? "OK" : "FAIL");
-
-        /* Restore zero */
-        address_space_stl_be(&address_space_memory, prom_test_addr,
-                             0, MEMTXATTRS_UNSPECIFIED, &txr);
-
-        /* Test main RAM write-readback at 0x2000 */
-        val = address_space_ldl_be(&address_space_memory, ram_test_addr,
-                                   MEMTXATTRS_UNSPECIFIED, &txr);
-        fprintf(stderr, "[RAM-TEST] current value at 0x%llx = 0x%08x\n",
-                (unsigned long long)ram_test_addr, val);
-    }
-
     /* SuperSPARC external cache (ECACHE) backing RAM.
      *
      * POST tests page table walks and cache coherency using physical
@@ -1061,19 +962,6 @@ static void sun4m_hw_init(MachineState *machine)
         memory_region_add_subregion(get_system_memory(),
                                     hwdef->slavio_base + PROM_SIZE_MAX,
                                     &ecache_ram);
-    }
-
-    /* DEBUG: overlay a watchpoint on the L1 page table at PA 0x2000-0x200F.
-     * Priority 1 beats the RAM region (priority 0) so every access to these
-     * 16 bytes is logged. */
-    {
-        static MemoryRegion l1_watch_region;
-        memset(l1_watch_backing, 0, sizeof(l1_watch_backing));
-        memory_region_init_io(&l1_watch_region, NULL, &l1_watch_ops,
-                              l1_watch_backing, "l1-watch", 16);
-        memory_region_add_subregion_overlap(get_system_memory(), 0x2000,
-                                            &l1_watch_region, 1);
-        fprintf(stderr, "[L1-WATCH] installed at PA 0x2000-0x200F\n");
     }
 
     slavio_intctl = slavio_intctl_init(hwdef->intctl_base,

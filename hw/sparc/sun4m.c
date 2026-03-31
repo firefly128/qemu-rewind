@@ -1043,13 +1043,13 @@ static void sun4m_hw_init(MachineState *machine)
     /* SuperSPARC external cache (ECACHE) backing RAM.
      *
      * POST tests page table walks and cache coherency using physical
-     * addresses just beyond the 1 MB PROM.  On real hardware the ECACHE
-     * SRAM responds at these addresses; provide writable RAM so POST
-     * reads back what it wrote. */
+     * addresses in the PROM's 16 MB L1 PTE region.  On real hardware
+     * the ECACHE SRAM responds at these addresses; provide writable RAM
+     * from PROM_SIZE_MAX up to the next device (ms_kb at +16 MB). */
     {
         static MemoryRegion ecache_ram;
         memory_region_init_ram_nomigrate(&ecache_ram, NULL,
-                                         "sun4m.ecache", 1 * MiB, NULL);
+                                         "sun4m.ecache", 15 * MiB, NULL);
         memory_region_add_subregion(get_system_memory(),
                                     hwdef->slavio_base + PROM_SIZE_MAX,
                                     &ecache_ram);

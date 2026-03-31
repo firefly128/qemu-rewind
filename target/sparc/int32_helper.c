@@ -108,6 +108,19 @@ void sparc_cpu_do_interrupt(CPUState *cs)
     CPUSPARCState *env = cpu_env(cs);
     int cwp, intno = cs->exception_index;
 
+    /* Trace data/instruction access errors and faults */
+    {
+        static int trap_trace_count;
+        if (trap_trace_count < 100 &&
+            (intno == 0x01 || intno == 0x09 || intno == 0x21 || intno == 0x29)) {
+            fprintf(stderr, "TRAP 0x%02x PC=%08x nPC=%08x "
+                    "mmuregs[0]=%08x FSR=%08x FAR=%08x\n",
+                    intno, env->pc, env->npc,
+                    env->mmuregs[0], env->mmuregs[3], env->mmuregs[4]);
+            trap_trace_count++;
+        }
+    }
+
     if (qemu_loglevel_mask(CPU_LOG_INT)) {
         static int count;
         const char *name;

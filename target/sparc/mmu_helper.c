@@ -279,6 +279,62 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
         fprintf(stderr, "[WALK-ERR] va=0x%08x rw=%d err=0x%x\n",
                 (uint32_t)address, rw, error_code);
     }
+
+    /* Populate TLB diagnostic arrays (SuperSPARC D-TLB fill).
+     *
+     * On real hardware the table walker fetches cache-line-width blocks from
+     * memory, so adjacent page table entries ride along in the D-cache and
+     * get deposited into TLB diagnostic entries.  POST checks these.
+     *
+     * Diagnostic address layout per entry E (E = row*4 + sub):
+     *   row = E / 4,  sub = E % 4
+     *   field F → idx = row*64 + (F*16 + sub) % 64
+     *
+     * Field 5 → VA tag,  Field 6 → adjacent PTP cached during walk.
+     * Only populate for data accesses (rw != 2) to model a split I/D TLB.
+     */
+    if (!error_code && rw != 2) {
+        uint32_t entry_number = env->dtlb_fill_next;
+        uint32_t diag_row = entry_number / 4;
+        uint32_t diag_sub = entry_number % 4;
+        int field5_idx = diag_row * 64 + (5 * 16 + diag_sub) % 64;
+        int field6_idx = diag_row * 64 + (6 * 16 + diag_sub) % 64;
+
+        /* Field 5: VA tag */
+        env->tlb_diag_tag[field5_idx] = address & 0xfffff000;
+
+        /* Field 6: first adjacent PTP from the same 16-byte L1 block.
+         * The walker already read one L1 entry at pde_ptr; read the other
+         * 3 entries in the same 16-byte aligned group and deposit the
+         * first PDP (type 1) we find. */
+        {
+            hwaddr block_base = pde_ptr & ~0xfULL;
+            int adjacent_index;
+            uint32_t cached_ptp = 0;
+            for (adjacent_index = 0; adjacent_index < 4; adjacent_index++) {
+                hwaddr entry_addr = block_base + adjacent_index * 4;
+                if (entry_addr != pde_ptr) {
+                    uint32_t adjacent_entry = address_space_ldl_be(cs->as,
+                        entry_addr, MEMTXATTRS_UNSPECIFIED, NULL);
+                    if ((adjacent_entry & PTE_ENTRYTYPE_MASK) == 1) {
+                        cached_ptp = adjacent_entry;
+                        break; /* take the first PDP found */
+                    }
+                }
+            }
+            env->tlb_diag_tag[field6_idx] = cached_ptp;
+        }
+
+        if (entry_number < 63) {
+            env->dtlb_fill_next = entry_number + 1;
+        }
+        fprintf(stderr, "[TLB-FILL] va=0x%08x entry=%u tag[%d]=0x%08x "
+                "tag[%d]=0x%08x\n",
+                (uint32_t)address, entry_number,
+                field5_idx, env->tlb_diag_tag[field5_idx],
+                field6_idx, env->tlb_diag_tag[field6_idx]);
+    }
+
     return error_code;
 }
 

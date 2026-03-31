@@ -1084,6 +1084,8 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
                         env->io_tlb_diag[idx] = 0;
                     }
                 }
+                /* Reset D-TLB fill counter on flush */
+                env->dtlb_fill_next = 0;
             }
 #ifdef DEBUG_MMU
             dump_mmu(env);

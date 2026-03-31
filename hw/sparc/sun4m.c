@@ -899,6 +899,43 @@ static void dummy_fdc_tc(void *opaque, int irq, int level)
 {
 }
 
+/* L1 page-table descriptor overlay at PA 0x2000-0x200F.
+ *
+ * The OBP firmware stores its initial L1 page-table descriptors at
+ * physical address 0x2000.  In SMP configurations, the SRMMU walker
+ * (which reads via address_space_ldl_be) must see coherent data with
+ * respect to guest CPU stores.  A plain RAM overlay at the same address
+ * does not prevent Trap 0x21 crashes — only MMIO-backed ops work,
+ * because the slow-path dispatch serialises store/read pairs across
+ * vCPUs and guarantees that address_space_ldl_be resolves identically
+ * to the TCG TLB store path. */
+static uint8_t l1_ptd_backing[16];
+
+static void l1_ptd_write(void *opaque, hwaddr addr,
+                          uint64_t val, unsigned size)
+{
+    uint32_t store_value = cpu_to_be32((uint32_t)val);
+    memcpy(&l1_ptd_backing[addr & 0xf], &store_value, size);
+}
+
+static uint64_t l1_ptd_read(void *opaque, hwaddr addr,
+                              unsigned size)
+{
+    uint32_t raw_value;
+    memcpy(&raw_value, &l1_ptd_backing[addr & ~3], 4);
+    return be32_to_cpu(raw_value);
+}
+
+static const MemoryRegionOps l1_ptd_ops = {
+    .read  = l1_ptd_read,
+    .write = l1_ptd_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = {
+        .min_access_size = 4,
+        .max_access_size = 4,
+    },
+};
+
 static void sun4m_hw_init(MachineState *machine)
 {
     const struct sun4m_hwdef *hwdef = SUN4M_MACHINE_GET_CLASS(machine)->hwdef;
@@ -962,6 +999,16 @@ static void sun4m_hw_init(MachineState *machine)
         memory_region_add_subregion(get_system_memory(),
                                     hwdef->slavio_base + PROM_SIZE_MAX,
                                     &ecache_ram);
+    }
+
+    /* Install L1 page-table descriptor overlay (see l1_ptd_ops). */
+    {
+        static MemoryRegion l1_ptd_region;
+        memset(l1_ptd_backing, 0, sizeof(l1_ptd_backing));
+        memory_region_init_io(&l1_ptd_region, NULL, &l1_ptd_ops,
+                              l1_ptd_backing, "sun4m.l1-ptd", 16);
+        memory_region_add_subregion_overlap(get_system_memory(), 0x2000,
+                                            &l1_ptd_region, 1);
     }
 
     slavio_intctl = slavio_intctl_init(hwdef->intctl_base,

@@ -754,8 +754,16 @@ uint64_t helper_ld_asi(CPUSPARCState *env, target_ulong addr,
     case 0x31: /* Turbosparc RAM snoop */
     case 0x32: /* Turbosparc page table descriptor diagnostic */
     case 0x39: /* data cache diagnostic register */
+    {
+        static int noop_asi_rd_count;
+        if (noop_asi_rd_count < 50) {
+            fprintf(stderr, "ASI-RD asi=0x%02x addr=%08x size=%d ret=0 PC=%08x\n",
+                    asi, (uint32_t)addr, size, env->pc);
+            noop_asi_rd_count++;
+        }
         ret = 0;
         break;
+    }
     case 0x38: /* SuperSPARC MMU Breakpoint Control Registers */
         {
             int reg = (addr >> 8) & 3;
@@ -1251,7 +1259,15 @@ void helper_st_asi(CPUSPARCState *env, target_ulong addr, uint64_t val,
                   descriptor diagnostic */
     case 0x36: /* I-cache flash clear */
     case 0x37: /* D-cache flash clear */
+    {
+        static int noop_asi_wr_count;
+        if (noop_asi_wr_count < 50) {
+            fprintf(stderr, "ASI-WR asi=0x%02x addr=%08x val=%08llx size=%d PC=%08x\n",
+                    asi, (uint32_t)addr, (unsigned long long)val, size, env->pc);
+            noop_asi_wr_count++;
+        }
         break;
+    }
     case 0x38: /* SuperSPARC MMU Breakpoint Control Registers*/
         {
             int reg = (addr >> 8) & 3;

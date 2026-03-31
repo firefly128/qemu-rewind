@@ -343,32 +343,39 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
 
     /* Populate TLB diagnostic arrays (SuperSPARC unified TLB fill).
      *
-     * The SuperSPARC-II has a unified 64-entry fully-associative TLB
-     * shared by instruction and data accesses.  On a TLB miss the
-     * hardware walker fills an entry with the PTE from the page table.
+     * The SuperSPARC-II has a unified 64-entry fully-associative TLB.
+     * On a TLB miss the hardware walker fills an entry with the PTE.
      *
-     * Diagnostic address layout per entry E:
-     *   Each entry occupies one 64-word row in the ASI 0x05 data array.
+     * Two parallel diagnostic arrays are populated:
+     *   ASI 0x05 (tlb_diag_data): Field 6 = PTE from the walk.
+     *   ASI 0x06 (tlb_diag_tag):  Field 5 = adjacent PTP, Field 6 = VA tag.
+     *
+     * Diagnostic index per entry E:
      *   Field F → idx = E*64 + (F*16) % 64
+     *   Field 5 → sub=16,  Field 6 → sub=32.
      *
-     * Field 5 (sub=16) → adjacent PTP cached during walk.
-     * Field 6 (sub=32) → PTE from the page table walk.
+     * On real hardware the VIVT I-cache prevents most I-fetch TLB misses
+     * (flush only invalidates the TLB, not the I-cache).  QEMU has no
+     * I-cache model, so I-fetch misses are over-counted.  To compensate,
+     * I-fetch fills write to the current entry but do NOT advance the
+     * fill counter or PTP skip counter — the subsequent data fill
+     * overwrites at the same slot, matching real hardware sequencing.
      */
     if (!error_code) {
         uint32_t entry_number = env->dtlb_fill_next;
-        /* Field 5 (PTP) → sub_part = (5*16) % 64 = 16
-         * Field 6 (PTE) → sub_part = (6*16) % 64 = 32 */
         int field5_idx = entry_number * 64 + 16;
         int field6_idx = entry_number * 64 + 32;
 
-        /* Field 6: PTE from the page table walk */
+        /* ASI 0x05 field 6: PTE from the page table walk */
         env->tlb_diag_data[field6_idx] = pde;
 
-        /* Field 5: adjacent PTP from the same 16-byte L1 block.
-         * The walker already read one L1 entry at pde_ptr; read the other
+        /* ASI 0x06 field 6: VA tag */
+        env->tlb_diag_tag[field6_idx] = address & 0xfffff000;
+
+        /* Field 5: adjacent PTP from the same 16-byte block.
+         * The walker already read one entry at pde_ptr; scan the other
          * 3 entries in the same 16-byte aligned group and deposit the
-         * Nth PDP (type 1) we find, where N = dtlb_ptp_skip.  This models
-         * the hardware depositing successive adjacent PTPs across walks. */
+         * Nth PDP (type 1) we find, where N = dtlb_ptp_skip. */
         {
             hwaddr block_base = pde_ptr & ~0xfULL;
             int adjacent_index;
@@ -389,17 +396,26 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
                 }
             }
             env->tlb_diag_data[field5_idx] = cached_ptp;
-            env->dtlb_ptp_skip++;
+            env->tlb_diag_tag[field5_idx] = cached_ptp;
         }
 
-        if (entry_number < 15) {
-            env->dtlb_fill_next = entry_number + 1;
+        /* Only data accesses advance the fill counter and PTP skip.
+         * I-fetch fills land at the same entry slot and get overwritten
+         * by the next data fill, matching real hardware where the I-cache
+         * prevents most I-fetch TLB misses after a flush. */
+        if (rw != 2) {
+            env->dtlb_ptp_skip++;
+            if (entry_number < 15) {
+                env->dtlb_fill_next = entry_number + 1;
+            }
         }
+
         fprintf(stderr, "[TLB-FILL] va=0x%08x rw=%d entry=%u data[%d]=0x%08x "
-                "data[%d]=0x%08x\n",
+                "data[%d]=0x%08x tag[%d]=0x%08x\n",
                 (uint32_t)address, rw, entry_number,
                 field5_idx, env->tlb_diag_data[field5_idx],
-                field6_idx, env->tlb_diag_data[field6_idx]);
+                field6_idx, env->tlb_diag_data[field6_idx],
+                field6_idx, env->tlb_diag_tag[field6_idx]);
     }
 
     return error_code;

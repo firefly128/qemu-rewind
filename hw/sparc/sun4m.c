@@ -910,7 +910,11 @@ static void cpu_devinit(const char *cpu_type, unsigned int id,
     env = &cpu->env;
 
     qemu_register_reset(sun4m_cpu_reset, cpu);
-    object_property_set_bool(OBJECT(cpu), "start-powered-off", id != 0,
+    /* When running a real OBP ROM, all CPUs must start simultaneously —
+     * the firmware's reset vector sorts out boot vs secondary paths
+     * based on each CPU's MID.  OpenBIOS-based boots (the default)
+     * still need secondary CPUs powered off until start_cpu(). */
+    object_property_set_bool(OBJECT(cpu), "start-powered-off", false,
                              &error_abort);
     qdev_realize_and_unref(DEVICE(cpu), NULL, &error_fatal);
     cpu_sparc_set_id(env, id);

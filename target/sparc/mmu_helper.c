@@ -300,10 +300,10 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
         int field5_idx = diag_row * 64 + (5 * 16 + diag_sub) % 64;
         int field6_idx = diag_row * 64 + (6 * 16 + diag_sub) % 64;
 
-        /* Field 5: VA tag */
-        env->tlb_diag_tag[field5_idx] = address & 0xfffff000;
+        /* Field 6: VA tag */
+        env->tlb_diag_tag[field6_idx] = address & 0xfffff000;
 
-        /* Field 6: first adjacent PTP from the same 16-byte L1 block.
+        /* Field 5: first adjacent PTP from the same 16-byte L1 block.
          * The walker already read one L1 entry at pde_ptr; read the other
          * 3 entries in the same 16-byte aligned group and deposit the
          * first PDP (type 1) we find. */
@@ -322,7 +322,7 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
                     }
                 }
             }
-            env->tlb_diag_tag[field6_idx] = cached_ptp;
+            env->tlb_diag_tag[field5_idx] = cached_ptp;
         }
 
         if (entry_number < 63) {

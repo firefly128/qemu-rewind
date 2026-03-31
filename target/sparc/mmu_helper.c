@@ -341,29 +341,28 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
                 (uint32_t)address, rw, error_code);
     }
 
-    /* Populate TLB diagnostic arrays (SuperSPARC D-TLB fill).
+    /* Populate TLB diagnostic arrays (SuperSPARC unified TLB fill).
      *
-     * On real hardware the table walker fetches cache-line-width blocks from
-     * memory, so adjacent page table entries ride along in the D-cache and
-     * get deposited into TLB diagnostic entries.  POST checks these.
+     * The SuperSPARC-II has a unified 64-entry fully-associative TLB
+     * shared by instruction and data accesses.  On a TLB miss the
+     * hardware walker fills an entry with the PTE from the page table.
      *
-     * Diagnostic address layout per entry E (E = row*4 + sub):
-     *   row = E / 4,  sub = E % 4
-     *   field F → idx = row*64 + (F*16 + sub) % 64
+     * Diagnostic address layout per entry E:
+     *   Each entry occupies one 64-word row in the ASI 0x05 data array.
+     *   Field F → idx = E*64 + (F*16) % 64
      *
-     * Field 5 → PTP,  Field 6 → VA tag cached during walk.
-     * Only populate for data accesses (rw != 2) to model a split I/D TLB.
+     * Field 5 (sub=16) → adjacent PTP cached during walk.
+     * Field 6 (sub=32) → PTE from the page table walk.
      */
-    if (!error_code && rw != 2) {
+    if (!error_code) {
         uint32_t entry_number = env->dtlb_fill_next;
-        /* Each D-TLB entry occupies its own row (64 words).
-         * Field 5 (PTP) → sub_part = (5*16) % 64 = 16
-         * Field 6 (VA tag) → sub_part = (6*16) % 64 = 32 */
+        /* Field 5 (PTP) → sub_part = (5*16) % 64 = 16
+         * Field 6 (PTE) → sub_part = (6*16) % 64 = 32 */
         int field5_idx = entry_number * 64 + 16;
         int field6_idx = entry_number * 64 + 32;
 
-        /* Field 6: VA tag */
-        env->tlb_diag_tag[field6_idx] = address & 0xfffff000;
+        /* Field 6: PTE from the page table walk */
+        env->tlb_diag_data[field6_idx] = pde;
 
         /* Field 5: adjacent PTP from the same 16-byte L1 block.
          * The walker already read one L1 entry at pde_ptr; read the other
@@ -389,18 +388,18 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
                     }
                 }
             }
-            env->tlb_diag_tag[field5_idx] = cached_ptp;
+            env->tlb_diag_data[field5_idx] = cached_ptp;
             env->dtlb_ptp_skip++;
         }
 
         if (entry_number < 15) {
             env->dtlb_fill_next = entry_number + 1;
         }
-        fprintf(stderr, "[TLB-FILL] va=0x%08x entry=%u tag[%d]=0x%08x "
-                "tag[%d]=0x%08x\n",
-                (uint32_t)address, entry_number,
-                field5_idx, env->tlb_diag_tag[field5_idx],
-                field6_idx, env->tlb_diag_tag[field6_idx]);
+        fprintf(stderr, "[TLB-FILL] va=0x%08x rw=%d entry=%u data[%d]=0x%08x "
+                "data[%d]=0x%08x\n",
+                (uint32_t)address, rw, entry_number,
+                field5_idx, env->tlb_diag_data[field5_idx],
+                field6_idx, env->tlb_diag_data[field6_idx]);
     }
 
     return error_code;

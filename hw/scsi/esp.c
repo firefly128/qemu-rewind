@@ -1474,8 +1474,16 @@ static void sysbus_esp_mem_write(void *opaque, hwaddr addr,
     SysBusESPState *sysbus = opaque;
     ESPState *s = ESP(&sysbus->esp);
     uint32_t saddr;
+    static int esp_write_trace_count;
 
     saddr = addr >> sysbus->it_shift;
+
+    if (esp_write_trace_count < 50) {
+        fprintf(stderr, "ESP-WR reg=%u addr=%04llx val=%02llx\n",
+                saddr, (unsigned long long)addr, (unsigned long long)val);
+        esp_write_trace_count++;
+    }
+
     esp_reg_write(s, saddr, val);
 }
 
@@ -1485,9 +1493,19 @@ static uint64_t sysbus_esp_mem_read(void *opaque, hwaddr addr,
     SysBusESPState *sysbus = opaque;
     ESPState *s = ESP(&sysbus->esp);
     uint32_t saddr;
+    uint64_t ret;
+    static int esp_read_trace_count;
 
     saddr = addr >> sysbus->it_shift;
-    return esp_reg_read(s, saddr);
+    ret = esp_reg_read(s, saddr);
+
+    if (esp_read_trace_count < 50) {
+        fprintf(stderr, "ESP-RD reg=%u addr=%04llx ret=%02llx\n",
+                saddr, (unsigned long long)addr, (unsigned long long)ret);
+        esp_read_trace_count++;
+    }
+
+    return ret;
 }
 
 static const MemoryRegionOps sysbus_esp_mem_ops = {

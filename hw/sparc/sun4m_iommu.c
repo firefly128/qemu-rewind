@@ -137,6 +137,7 @@ static uint64_t iommu_mem_read(void *opaque, hwaddr addr,
     IOMMUState *s = opaque;
     hwaddr saddr;
     uint32_t ret;
+    static int iommu_read_trace_count;
 
     saddr = addr >> 2;
     switch (saddr) {
@@ -150,6 +151,13 @@ static uint64_t iommu_mem_read(void *opaque, hwaddr addr,
         break;
     }
     trace_sun4m_iommu_mem_readl(saddr, ret);
+
+    if (iommu_read_trace_count < 100) {
+        fprintf(stderr, "IOMMU-RD reg=%04llx ret=%08x\n",
+                (unsigned long long)(addr), ret);
+        iommu_read_trace_count++;
+    }
+
     return ret;
 }
 
@@ -158,9 +166,34 @@ static void iommu_mem_write(void *opaque, hwaddr addr,
 {
     IOMMUState *s = opaque;
     hwaddr saddr;
+    static int iommu_trace_count;
 
     saddr = addr >> 2;
     trace_sun4m_iommu_mem_writel(saddr, val);
+
+    if (iommu_trace_count < 100) {
+        const char *register_name;
+        switch (saddr) {
+        case IOMMU_CTRL:    register_name = "CTRL"; break;
+        case IOMMU_BASE:    register_name = "BASE"; break;
+        case IOMMU_AER:     register_name = "AER"; break;
+        case IOMMU_ARBEN:   register_name = "ARBEN"; break;
+        case IOMMU_SBCFG0:  register_name = "SBCFG0"; break;
+        case IOMMU_SBCFG1:  register_name = "SBCFG1"; break;
+        case IOMMU_SBCFG2:  register_name = "SBCFG2"; break;
+        case IOMMU_SBCFG3:  register_name = "SBCFG3"; break;
+        case IOMMU_AFSR:    register_name = "AFSR"; break;
+        case IOMMU_AFAR:    register_name = "AFAR"; break;
+        case IOMMU_TLBFLUSH: register_name = "TLBFLUSH"; break;
+        case IOMMU_PGFLUSH: register_name = "PGFLUSH"; break;
+        case IOMMU_MASK_ID: register_name = "MASK_ID"; break;
+        default:            register_name = "???"; break;
+        }
+        fprintf(stderr, "IOMMU-WR %s val=%08llx\n",
+                register_name, (unsigned long long)val);
+        iommu_trace_count++;
+    }
+
     switch (saddr) {
     case IOMMU_CTRL:
         switch (val & IOMMU_CTRL_RNGE) {

@@ -371,14 +371,6 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
         int entry_base = entry_number * 64;
         int field5_idx = entry_base + 16;
         int field6_idx = entry_base + 32;
-        int clear_index;
-
-        /* Clear the entire entry row — on real hardware a TLB fill
-         * replaces the full entry, so stale fields must not persist. */
-        for (clear_index = 0; clear_index < 64; clear_index++) {
-            env->tlb_diag_data[entry_base + clear_index] = 0;
-            env->tlb_diag_tag[entry_base + clear_index] = 0;
-        }
 
         /* ASI 0x06 field 6: VA tag */
         env->tlb_diag_tag[field6_idx] = address & 0xfffff000;

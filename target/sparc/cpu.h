@@ -518,6 +518,7 @@ struct CPUArchState {
     uint32_t dcache_tag[1024];    /* ASI 0x0E: D-cache tag diagnostic */
     uint32_t dcache_data[1024];   /* ASI 0x0F: D-cache data diagnostic */
     uint32_t dtlb_fill_next;      /* Next D-TLB entry to fill (0-63) */
+    uint32_t dtlb_ptp_skip;       /* Adjacent PTPs already deposited */
 #endif
     float_status fp_status;
 #if defined(TARGET_SPARC64)

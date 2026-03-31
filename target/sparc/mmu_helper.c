@@ -290,7 +290,7 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
      *   row = E / 4,  sub = E % 4
      *   field F → idx = row*64 + (F*16 + sub) % 64
      *
-     * Field 5 → VA tag,  Field 6 → adjacent PTP cached during walk.
+     * Field 5 → PTP,  Field 6 → VA tag cached during walk.
      * Only populate for data accesses (rw != 2) to model a split I/D TLB.
      */
     if (!error_code && rw != 2) {
@@ -303,26 +303,32 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
         /* Field 6: VA tag */
         env->tlb_diag_tag[field6_idx] = address & 0xfffff000;
 
-        /* Field 5: first adjacent PTP from the same 16-byte L1 block.
+        /* Field 5: adjacent PTP from the same 16-byte L1 block.
          * The walker already read one L1 entry at pde_ptr; read the other
          * 3 entries in the same 16-byte aligned group and deposit the
-         * first PDP (type 1) we find. */
+         * Nth PDP (type 1) we find, where N = dtlb_ptp_skip.  This models
+         * the hardware depositing successive adjacent PTPs across walks. */
         {
             hwaddr block_base = pde_ptr & ~0xfULL;
             int adjacent_index;
             uint32_t cached_ptp = 0;
+            uint32_t pdp_skip_remaining = env->dtlb_ptp_skip;
             for (adjacent_index = 0; adjacent_index < 4; adjacent_index++) {
                 hwaddr entry_addr = block_base + adjacent_index * 4;
                 if (entry_addr != pde_ptr) {
                     uint32_t adjacent_entry = address_space_ldl_be(cs->as,
                         entry_addr, MEMTXATTRS_UNSPECIFIED, NULL);
                     if ((adjacent_entry & PTE_ENTRYTYPE_MASK) == 1) {
-                        cached_ptp = adjacent_entry;
-                        break; /* take the first PDP found */
+                        if (pdp_skip_remaining == 0) {
+                            cached_ptp = adjacent_entry;
+                            break;
+                        }
+                        pdp_skip_remaining--;
                     }
                 }
             }
             env->tlb_diag_tag[field5_idx] = cached_ptp;
+            env->dtlb_ptp_skip++;
         }
 
         if (entry_number < 63) {

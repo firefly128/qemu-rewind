@@ -375,6 +375,10 @@ static int get_physical_address(CPUSPARCState *env, CPUTLBEntryFull *full,
         /* ASI 0x06 field 6: VA tag */
         env->tlb_diag_tag[field6_idx] = address & 0xfffff000;
 
+        /* ASI 0x05 field 6: PTE from the walk (paddr + attributes).
+         * The I_TLB_miss test reads this to verify the paddr and PTE. */
+        env->tlb_diag_data[field6_idx] = pde;
+
         /* Field 5: PTP from the L1 cache line read during the walk.
          * Scan all 4 entries in the 16-byte aligned block around the
          * L1 pde_ptr.  Take the Nth PTP (type 1) where N = dtlb_ptp_skip.

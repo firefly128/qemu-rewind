@@ -649,9 +649,6 @@ static void idreg_init(hwaddr addr)
     sysbus_realize_and_unref(s, &error_fatal);
 
     sysbus_mmio_map(s, 0, addr);
-    address_space_write_rom(&address_space_memory, addr,
-                            MEMTXATTRS_UNSPECIFIED,
-                            idreg_data, sizeof(idreg_data));
 }
 
 OBJECT_DECLARE_SIMPLE_TYPE(IDRegState, MACIO_ID_REGISTER)
@@ -662,18 +659,53 @@ struct IDRegState {
     MemoryRegion mem;
 };
 
+static uint64_t idreg_mem_read(void *opaque, hwaddr addr, unsigned size)
+{
+    static int idreg_trace_count;
+    uint64_t ret = 0;
+
+    if (addr < sizeof(idreg_data)) {
+        /* Return the appropriate bytes based on size and address */
+        for (unsigned i = 0; i < size && (addr + i) < sizeof(idreg_data); i++) {
+            ret |= (uint64_t)idreg_data[addr + i] << (8 * (size - 1 - i));
+        }
+    }
+    if (idreg_trace_count < 100) {
+        fprintf(stderr, "IDREG-RD addr=%04llx size=%u ret=%08llx\n",
+                (unsigned long long)addr, size, (unsigned long long)ret);
+        idreg_trace_count++;
+    }
+    return ret;
+}
+
+static void idreg_mem_write(void *opaque, hwaddr addr,
+                            uint64_t val, unsigned size)
+{
+    static int idreg_wr_trace_count;
+    if (idreg_wr_trace_count < 20) {
+        fprintf(stderr, "IDREG-WR addr=%04llx size=%u val=%08llx\n",
+                (unsigned long long)addr, size, (unsigned long long)val);
+        idreg_wr_trace_count++;
+    }
+}
+
+static const MemoryRegionOps idreg_mem_ops = {
+    .read = idreg_mem_read,
+    .write = idreg_mem_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = {
+        .min_access_size = 1,
+        .max_access_size = 4,
+    },
+};
+
 static void idreg_realize(DeviceState *ds, Error **errp)
 {
     IDRegState *s = MACIO_ID_REGISTER(ds);
     SysBusDevice *dev = SYS_BUS_DEVICE(ds);
 
-    if (!memory_region_init_ram_nomigrate(&s->mem, OBJECT(ds), "sun4m.idreg",
-                                          sizeof(idreg_data), errp)) {
-        return;
-    }
-
-    vmstate_register_ram_global(&s->mem);
-    memory_region_set_readonly(&s->mem, true);
+    memory_region_init_io(&s->mem, OBJECT(ds), &idreg_mem_ops, s,
+                          "sun4m.idreg", sizeof(idreg_data));
     sysbus_init_mmio(dev, &s->mem);
 }
 

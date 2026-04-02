@@ -176,7 +176,7 @@ static uint64_t dma_mem_read(void *opaque, hwaddr addr,
     saddr = (addr & DMA_MASK) >> 2;
     trace_sparc32_dma_mem_readl(addr, s->dmaregs[saddr]);
 
-    if (dma_read_trace_count < 50) {
+    if (dma_read_trace_count < 200) {
         fprintf(stderr, "DMA-RD addr=%04llx reg=%u ret=%08x\n",
                 (unsigned long long)addr, saddr, s->dmaregs[saddr]);
         dma_read_trace_count++;

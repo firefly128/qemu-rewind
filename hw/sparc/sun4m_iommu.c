@@ -152,7 +152,7 @@ static uint64_t iommu_mem_read(void *opaque, hwaddr addr,
     }
     trace_sun4m_iommu_mem_readl(saddr, ret);
 
-    if (iommu_read_trace_count < 100) {
+    if (iommu_read_trace_count < 500) {
         fprintf(stderr, "IOMMU-RD reg=%04llx ret=%08x\n",
                 (unsigned long long)(addr), ret);
         iommu_read_trace_count++;
@@ -171,7 +171,7 @@ static void iommu_mem_write(void *opaque, hwaddr addr,
     saddr = addr >> 2;
     trace_sun4m_iommu_mem_writel(saddr, val);
 
-    if (iommu_trace_count < 100) {
+    if (iommu_trace_count < 500) {
         const char *register_name;
         switch (saddr) {
         case IOMMU_CTRL:    register_name = "CTRL"; break;

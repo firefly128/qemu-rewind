@@ -1478,7 +1478,7 @@ static void sysbus_esp_mem_write(void *opaque, hwaddr addr,
 
     saddr = addr >> sysbus->it_shift;
 
-    if (esp_write_trace_count < 50) {
+    if (esp_write_trace_count < 200) {
         fprintf(stderr, "ESP-WR reg=%u addr=%04llx val=%02llx\n",
                 saddr, (unsigned long long)addr, (unsigned long long)val);
         esp_write_trace_count++;
@@ -1499,7 +1499,7 @@ static uint64_t sysbus_esp_mem_read(void *opaque, hwaddr addr,
     saddr = addr >> sysbus->it_shift;
     ret = esp_reg_read(s, saddr);
 
-    if (esp_read_trace_count < 50) {
+    if (esp_read_trace_count < 200) {
         fprintf(stderr, "ESP-RD reg=%u addr=%04llx ret=%02llx\n",
                 saddr, (unsigned long long)addr, (unsigned long long)ret);
         esp_read_trace_count++;

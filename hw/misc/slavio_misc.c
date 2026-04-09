@@ -62,17 +62,6 @@ struct MiscState {
     uint16_t leds;
 };
 
-#define TYPE_APC "apc"
-typedef struct APCState APCState;
-DECLARE_INSTANCE_CHECKER(APCState, APC,
-                         TYPE_APC)
-
-struct APCState {
-    SysBusDevice parent_obj;
-
-    MemoryRegion iomem;
-    qemu_irq cpu_halt;
-};
 
 #define MISC_SIZE 1
 #define LED_SIZE 2
@@ -290,33 +279,6 @@ static const MemoryRegionOps slavio_aux2_mem_ops = {
     },
 };
 
-static void apc_mem_writeb(void *opaque, hwaddr addr,
-                           uint64_t val, unsigned size)
-{
-    APCState *s = opaque;
-
-    trace_apc_mem_writeb(val & 0xff);
-    qemu_irq_raise(s->cpu_halt);
-}
-
-static uint64_t apc_mem_readb(void *opaque, hwaddr addr,
-                              unsigned size)
-{
-    uint32_t ret = 0;
-
-    trace_apc_mem_readb(ret);
-    return ret;
-}
-
-static const MemoryRegionOps apc_mem_ops = {
-    .read = apc_mem_readb,
-    .write = apc_mem_writeb,
-    .endianness = DEVICE_BIG_ENDIAN,
-    .valid = {
-        .min_access_size = 1,
-        .max_access_size = 1,
-    }
-};
 
 static uint64_t slavio_sysctrl_mem_readl(void *opaque, hwaddr addr,
                                          unsigned size)
@@ -421,18 +383,6 @@ static const VMStateDescription vmstate_misc = {
     }
 };
 
-static void apc_init(Object *obj)
-{
-    APCState *s = APC(obj);
-    SysBusDevice *dev = SYS_BUS_DEVICE(obj);
-
-    sysbus_init_irq(dev, &s->cpu_halt);
-
-    /* Power management (APC) XXX: not a Slavio device */
-    memory_region_init_io(&s->iomem, obj, &apc_mem_ops, s,
-                          "apc", MISC_SIZE);
-    sysbus_init_mmio(dev, &s->iomem);
-}
 
 static void slavio_misc_init(Object *obj)
 {
@@ -500,17 +450,9 @@ static const TypeInfo slavio_misc_info = {
     .class_init    = slavio_misc_class_init,
 };
 
-static const TypeInfo apc_info = {
-    .name          = TYPE_APC,
-    .parent        = TYPE_SYS_BUS_DEVICE,
-    .instance_size = sizeof(MiscState),
-    .instance_init = apc_init,
-};
-
 static void slavio_misc_register_types(void)
 {
     type_register_static(&slavio_misc_info);
-    type_register_static(&apc_info);
 }
 
 type_init(slavio_misc_register_types)

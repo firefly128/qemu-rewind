@@ -2,7 +2,10 @@ system_ss.add(when: 'CONFIG_CADENCE', if_true: files('cadence_uart.c'))
 system_ss.add(when: 'CONFIG_CMSDK_APB_UART', if_true: files('cmsdk-apb-uart.c'))
 system_ss.add(when: 'CONFIG_ESCC', if_true: files('escc.c'))
 system_ss.add(when: 'CONFIG_SUN_BPP', if_true: files('sun_bpp.c'))
-if coremidi.found()
+if bpp_midi_backend == 'munt'
+  system_ss.add(when: 'CONFIG_SUN_BPP', if_true: [
+    files('sun_bpp_midi_mt32.m'), mt32emu, coreaudio_framework])
+elif bpp_midi_backend == 'coremidi'
   system_ss.add(when: 'CONFIG_SUN_BPP', if_true: [files('sun_bpp_midi_coremidi.m'), coremidi])
 else
   system_ss.add(when: 'CONFIG_SUN_BPP', if_true: files('sun_bpp_midi_stub.c'))

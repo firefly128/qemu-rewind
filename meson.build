@@ -1775,6 +1775,37 @@ if host_os == 'darwin' and have_system
                         required: false)
 endif
 
+# MT-32 emulator (Munt/libmt32emu) for BPP MIDI backend
+mt32emu = not_found
+if have_system
+  mt32emu_lib = cc.find_library('mt32emu', dirs: ['/opt/homebrew/lib'],
+                                required: false)
+  if mt32emu_lib.found()
+    # libmt32emu is C++ — need the C++ standard library at link time
+    mt32emu = declare_dependency(
+      dependencies: [mt32emu_lib, cc.find_library('c++')],
+      include_directories: include_directories('/opt/homebrew/include'))
+  endif
+endif
+coreaudio_framework = not_found
+if host_os == 'darwin' and have_system
+  coreaudio_framework = dependency('appleframeworks',
+                                   modules: ['AudioToolbox'],
+                                   required: false)
+endif
+
+# Resolve bpp_midi backend selection
+bpp_midi_backend = get_option('bpp_midi')
+if bpp_midi_backend == 'auto'
+  if mt32emu.found() and coreaudio_framework.found() and host_os == 'darwin'
+    bpp_midi_backend = 'munt'
+  elif coremidi.found()
+    bpp_midi_backend = 'coremidi'
+  else
+    bpp_midi_backend = 'none'
+  endif
+endif
+
 opengl = not_found
 if not get_option('opengl').auto() or have_system or have_vhost_user_gpu
   epoxy = dependency('epoxy', method: 'pkg-config',

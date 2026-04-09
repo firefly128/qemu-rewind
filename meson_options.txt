@@ -288,6 +288,9 @@ option('trace_backends', type: 'array', value: ['log'],
 
 option('alsa', type: 'feature', value: 'auto',
        description: 'ALSA sound support')
+option('bpp_midi', type: 'combo', value: 'auto',
+       choices: ['auto', 'munt', 'coremidi', 'none'],
+       description: 'Sun BPP MIDI backend (munt=MT-32 synth, coremidi=virtual source, none=stub)')
 option('coreaudio', type: 'feature', value: 'auto',
        description: 'CoreAudio sound support')
 option('dsound', type: 'feature', value: 'auto',

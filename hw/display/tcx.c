@@ -25,8 +25,10 @@
 #include "qemu/osdep.h"
 #include "qemu/datadir.h"
 #include "qapi/error.h"
+#include "qemu/timer.h"
 #include "ui/console.h"
 #include "ui/pixel_ops.h"
+#include "hw/core/irq.h"
 #include "hw/core/loader.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
@@ -54,6 +56,31 @@
 #define TCX_THC_CURSXY   0x8fc
 #define TCX_THC_CURSMASK 0x900
 #define TCX_THC_CURSBITS 0x980
+
+/*
+ * THC Video Control register (offset 0x818) bit definitions.
+ * From Solaris TCX kernel driver reverse-engineering:
+ *
+ * Bit 25 (0x02000000): VBlank active — read-only, 1 during vertical blank.
+ *                       Polled by the driver's wait_for_interrupt().
+ * Bit  6 (0x00000040): Busy — read-only, always 0 in emulation.
+ * Bit  5 (0x00000020): Interrupt enable — R/W.  The driver sets this via
+ *                       tcx_int_enable() and clears it in the ISR to ack.
+ * Bit  4 (0x00000010): Interrupt pending — ACTIVE LOW.  1 = no interrupt,
+ *                       0 = interrupt pending.  The ISR checks: if SET,
+ *                       returns unclaimed.  VBlank CLEARs this bit;
+ *                       the ISR acknowledge (clearing INTEN) SETs it.
+ */
+#define TCX_THC_MISC_VBLANK   0x02000000  /* bit 25 */
+#define TCX_THC_MISC_INTEN    0x00000020  /* bit  5 */
+#define TCX_THC_MISC_INTPEND  0x00000010  /* bit  4: active-low */
+/* Only INTPEND is truly read-only (managed by VBlank timer / ISR ack).
+ * Bit 25 is written as DPMS sync and read as VBlank status — the timer
+ * overwrites it on each tick, so DPMS writes are accepted but transient. */
+#define TCX_THC_MISC_READONLY TCX_THC_MISC_INTPEND
+
+/* 60 Hz VBlank period in nanoseconds */
+#define TCX_VBLANK_PERIOD_NS  16666667
 
 #define TYPE_TCX "sun-tcx"
 OBJECT_DECLARE_SIMPLE_TYPE(TCXState, TCX)
@@ -99,6 +126,10 @@ struct TCXState {
     uint16_t cursy;
     uint16_t prev_cursx;
     uint16_t prev_cursy;
+    QEMUTimer *vblank_timer;
+    uint32_t thc_config;       /* THC offset 0x000: revision in bits 23:20 */
+    uint32_t thc_speed;        /* THC offset 0x094: speed bit 16 */
+    uint8_t dac_cmd;           /* BT458 command register (offset 0x08) */
 };
 
 static void tcx_set_dirty(TCXState *s, ram_addr_t addr, int len)
@@ -345,8 +376,39 @@ static int vmstate_tcx_post_load(void *opaque, int version_id)
 
     update_palette_entries(s, 0, 256);
     tcx_set_dirty(s, 0, memory_region_size(&s->vram_mem));
+
+    /* Restart the VBlank timer if interrupts were enabled at save time */
+    if ((s->thcmisc & TCX_THC_MISC_INTEN) && !timer_pending(s->vblank_timer)) {
+        timer_mod(s->vblank_timer,
+                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + TCX_VBLANK_PERIOD_NS);
+    }
+
     return 0;
 }
+
+static bool vmstate_tcx_v5_needed(void *opaque)
+{
+    return true;
+}
+
+static const VMStateDescription vmstate_tcx_v5 = {
+    .name = "tcx/v5",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = vmstate_tcx_v5_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(thcmisc, TCXState),
+        VMSTATE_UINT32(tmpblit, TCXState),
+        VMSTATE_UINT16(cursx, TCXState),
+        VMSTATE_UINT16(cursy, TCXState),
+        VMSTATE_UINT32_ARRAY(cursmask, TCXState, 32),
+        VMSTATE_UINT32_ARRAY(cursbits, TCXState, 32),
+        VMSTATE_UINT8(dac_addr_pending, TCXState),
+        VMSTATE_UINT8(dac_addr_dirty, TCXState),
+        VMSTATE_UINT8(dac_cmd, TCXState),
+        VMSTATE_END_OF_LIST()
+    }
+};
 
 static const VMStateDescription vmstate_tcx = {
     .name ="tcx",
@@ -363,6 +425,10 @@ static const VMStateDescription vmstate_tcx = {
         VMSTATE_UINT8(dac_index, TCXState),
         VMSTATE_UINT8(dac_state, TCXState),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_tcx_v5,
+        NULL
     }
 };
 
@@ -385,6 +451,12 @@ static void tcx_reset(DeviceState *d)
     s->dac_state = 0;
     s->dac_addr_pending = 0;
     s->dac_addr_dirty = 0;
+    s->dac_cmd = 0x40;  /* BT458 default: overlay enable bits 25:24 */
+    /* Video active, no pending interrupt (bit 4 active low: 1=idle) */
+    s->thcmisc = TCX_THC_MISC_VBLANK | TCX_THC_MISC_INTPEND;
+    s->thc_config = 0;  /* revision 0 in bits 23:20 */
+    s->thc_speed = 0;
+    s->tmpblit = 0;
     s->cursx = 0xf000; /* Put cursor off screen */
     s->cursy = 0xf000;
     s->prev_cursx = 0xf000;
@@ -397,21 +469,31 @@ static uint64_t tcx_dac_readl(void *opaque, hwaddr addr,
     TCXState *s = opaque;
     uint32_t val = 0;
 
-    switch (s->dac_state) {
-    case 0:
-        val = s->r[s->dac_index] << 24;
-        s->dac_state++;
+    switch (addr) {
+    case 0: /* Address register read-back */
+        val = s->dac_index << 24;
         break;
-    case 1:
-        val = s->g[s->dac_index] << 24;
-        s->dac_state++;
+    case 8: /* Command register */
+        val = s->dac_cmd << 24;
         break;
-    case 2:
-        val = s->b[s->dac_index] << 24;
-        s->dac_index = (s->dac_index + 1) & 0xff; /* Index autoincrement */
-        /* fall through */
-    default:
-        s->dac_state = 0;
+    default: /* 4 = pixel colors, 12 = overlay colors */
+        switch (s->dac_state) {
+        case 0:
+            val = s->r[s->dac_index] << 24;
+            s->dac_state++;
+            break;
+        case 1:
+            val = s->g[s->dac_index] << 24;
+            s->dac_state++;
+            break;
+        case 2:
+            val = s->b[s->dac_index] << 24;
+            s->dac_index = (s->dac_index + 1) & 0xff;
+            /* fall through */
+        default:
+            s->dac_state = 0;
+            break;
+        }
         break;
     }
 
@@ -458,7 +540,10 @@ static void tcx_dac_writel(void *opaque, hwaddr addr, uint64_t val,
             break;
         }
         break;
-    default: /* Control registers */
+    case 8: /* Command register — overlay/cursor enable, read mask */
+        s->dac_cmd = val >> 24;
+        break;
+    default:
         break;
     }
 }
@@ -712,6 +797,46 @@ static const MemoryRegionOps tcx_rblit_ops = {
     },
 };
 
+/*
+ * VBlank timer — fires at ~60 Hz to emulate the TCX vertical retrace.
+ *
+ * On each tick:
+ *  - Toggle the VBlank-active bit (bit 25) so the driver's
+ *    wait_for_interrupt() can see the transition.
+ *  - If the driver has enabled interrupts (bit 5), set the
+ *    interrupt-pending bit (bit 4) and raise the SBus IRQ.
+ *
+ * The Solaris TCX ISR (tcx_intr) acknowledges by clearing bit 5,
+ * which causes tcx_thc_writel() to clear pending and lower the IRQ.
+ */
+static void tcx_vblank_cb(void *opaque)
+{
+    TCXState *s = opaque;
+
+    s->thcmisc ^= TCX_THC_MISC_VBLANK;
+
+    /*
+     * On VBlank rising edge (bit 25 went high): clear INTPEND (active
+     * low — 0 = pending) and raise the SBus IRQ if enabled.
+     *
+     * INTPEND stays low (pending) until the ISR acknowledges by
+     * clearing INTEN, which triggers the THC write handler to set
+     * INTPEND back to idle (1) and lower the IRQ.  We do NOT reset
+     * INTPEND on the falling edge to avoid a race where the ISR
+     * reads INTPEND=1 (idle) and returns unclaimed while the IRQ
+     * line is still asserted.
+     */
+    if (s->thcmisc & TCX_THC_MISC_VBLANK) {
+        s->thcmisc &= ~TCX_THC_MISC_INTPEND;   /* 0 = pending */
+        if (s->thcmisc & TCX_THC_MISC_INTEN) {
+            qemu_irq_raise(s->irq);
+        }
+    }
+
+    timer_mod(s->vblank_timer,
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + TCX_VBLANK_PERIOD_NS);
+}
+
 static void tcx_invalidate_cursor_position(TCXState *s)
 {
     int ymin, ymax, start, end;
@@ -734,10 +859,19 @@ static uint64_t tcx_thc_readl(void *opaque, hwaddr addr,
     TCXState *s = opaque;
     uint64_t val;
 
-    if (addr == TCX_THC_MISC) {
-        val = s->thcmisc | 0x02000000;
-    } else {
+    switch (addr) {
+    case 0x000: /* THC Config — revision in bits 23:20 */
+        val = s->thc_config;
+        break;
+    case 0x094: /* THC Speed — bit 16 set for fast CPU clocks */
+        val = s->thc_speed;
+        break;
+    case TCX_THC_MISC: /* 0x818 */
+        val = s->thcmisc;
+        break;
+    default:
         val = 0;
+        break;
     }
     return val;
 }
@@ -747,7 +881,10 @@ static void tcx_thc_writel(void *opaque, hwaddr addr,
 {
     TCXState *s = opaque;
 
-    if (addr == TCX_THC_CURSXY) {
+    if (addr == 0x094) {
+        /* THC Speed — driver writes bit 16 based on CPU clock frequency */
+        s->thc_speed = val;
+    } else if (addr == TCX_THC_CURSXY) {
         tcx_invalidate_cursor_position(s);
         s->cursx = val >> 16;
         s->cursy = val;
@@ -759,7 +896,38 @@ static void tcx_thc_writel(void *opaque, hwaddr addr,
         s->cursbits[(addr - TCX_THC_CURSBITS) >> 2] = val;
         tcx_invalidate_cursor_position(s);
     } else if (addr == TCX_THC_MISC) {
-        s->thcmisc = val;
+        /*
+         * Update writable bits, preserve read-only hardware state
+         * (VBlank active and interrupt pending are managed by the
+         * VBlank timer, not by software writes).
+         */
+        uint32_t old_enable = s->thcmisc & TCX_THC_MISC_INTEN;
+        s->thcmisc = (val & ~TCX_THC_MISC_READONLY) |
+                     (s->thcmisc & TCX_THC_MISC_READONLY);
+
+        if (!(s->thcmisc & TCX_THC_MISC_INTEN)) {
+            /*
+             * Driver cleared interrupt enable (ISR acknowledge).
+             * Set INTPEND back to idle (active low: 1 = no pending)
+             * and lower the IRQ line.
+             */
+            s->thcmisc |= TCX_THC_MISC_INTPEND;
+            qemu_irq_lower(s->irq);
+        } else if (!old_enable && (s->thcmisc & TCX_THC_MISC_INTEN)) {
+            /*
+             * Driver enabled interrupts (0→1 transition).  Start the
+             * VBlank timer if not already running, and re-assert IRQ
+             * if pending is already active (active low: 0 = pending).
+             */
+            if (!timer_pending(s->vblank_timer)) {
+                timer_mod(s->vblank_timer,
+                          qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)
+                          + TCX_VBLANK_PERIOD_NS);
+            }
+            if (!(s->thcmisc & TCX_THC_MISC_INTPEND)) {
+                qemu_irq_raise(s->irq);
+            }
+        }
     }
 
 }
@@ -1053,12 +1221,18 @@ static void tcx_realizefn(DeviceState *dev, Error **errp)
 
     sysbus_init_irq(sbd, &s->irq);
 
+    /* VBlank timer for DGA synchronization and interrupt-driven
+     * colormap/cursor updates in the Solaris TCX driver.
+     * Not started until the driver first enables interrupts (bit 5)
+     * to avoid a spurious "interrupt not serviced" during early boot
+     * before ddi_add_intr completes. */
+    s->vblank_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, tcx_vblank_cb, s);
+
     if (s->depth == 8) {
         s->con = graphic_console_init(dev, 0, &tcx_ops, s);
     } else {
         s->con = graphic_console_init(dev, 0, &tcx24_ops, s);
     }
-    s->thcmisc = 0;
 
     qemu_console_resize(s->con, s->width, s->height);
 }

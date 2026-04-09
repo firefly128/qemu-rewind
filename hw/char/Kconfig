@@ -1,6 +1,9 @@
 config ESCC
     bool
 
+config SUN_BPP
+    bool
+
 config HTIF
     bool
 

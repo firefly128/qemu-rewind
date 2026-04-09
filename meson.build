@@ -1769,6 +1769,12 @@ if not get_option('coreaudio').auto() or (host_os == 'darwin' and have_system)
                          required: get_option('coreaudio'))
 endif
 
+coremidi = not_found
+if host_os == 'darwin' and have_system
+  coremidi = dependency('appleframeworks', modules: ['CoreMIDI', 'Foundation'],
+                        required: false)
+endif
+
 opengl = not_found
 if not get_option('opengl').auto() or have_system or have_vhost_user_gpu
   epoxy = dependency('epoxy', method: 'pkg-config',

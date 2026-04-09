@@ -78,6 +78,7 @@ struct TCXState {
     MemoryRegion tec;
     MemoryRegion dac;
     MemoryRegion thc;
+    MemoryRegion thc_700;
     MemoryRegion dhc;
     MemoryRegion alt;
     MemoryRegion thc24;
@@ -89,11 +90,15 @@ struct TCXState {
     uint8_t r[260], g[260], b[260];
     uint16_t width, height, depth;
     uint8_t dac_index, dac_state;
+    uint8_t dac_addr_pending;  /* latched by ctrl port, applied on data write */
+    uint8_t dac_addr_dirty;    /* set by ctrl port, cleared when latched */
     uint32_t thcmisc;
     uint32_t cursmask[32];
     uint32_t cursbits[32];
     uint16_t cursx;
     uint16_t cursy;
+    uint16_t prev_cursx;
+    uint16_t prev_cursy;
 };
 
 static void tcx_set_dirty(TCXState *s, ram_addr_t addr, int len)
@@ -232,7 +237,9 @@ static void tcx_update_display(void *opaque)
                                              DIRTY_MEMORY_VGA);
 
     for (y = 0; y < ts->height; y++, page += ds) {
-        if (tcx_check_dirty(ts, snap, page, ds)) {
+        if (tcx_check_dirty(ts, snap, page, ds) ||
+            (y >= ts->cursy && y < ts->cursy + 32) ||
+            (y >= ts->prev_cursy && y < ts->prev_cursy + 32)) {
             if (y_start < 0)
                 y_start = y;
 
@@ -256,6 +263,8 @@ static void tcx_update_display(void *opaque)
         dpy_gfx_update(ts->con, 0, y_start,
                        ts->width, y - y_start);
     }
+    ts->prev_cursx = ts->cursx;
+    ts->prev_cursy = ts->cursy;
     g_free(snap);
 }
 
@@ -374,8 +383,12 @@ static void tcx_reset(DeviceState *d)
                               DIRTY_MEMORY_VGA);
     s->dac_index = 0;
     s->dac_state = 0;
+    s->dac_addr_pending = 0;
+    s->dac_addr_dirty = 0;
     s->cursx = 0xf000; /* Put cursor off screen */
     s->cursy = 0xf000;
+    s->prev_cursx = 0xf000;
+    s->prev_cursy = 0xf000;
 }
 
 static uint64_t tcx_dac_readl(void *opaque, hwaddr addr,
@@ -415,6 +428,7 @@ static void tcx_dac_writel(void *opaque, hwaddr addr, uint64_t val,
     case 0: /* Address */
         s->dac_index = val >> 24;
         s->dac_state = 0;
+        s->dac_addr_dirty = 0;  /* cancel any stale pending from ctrl port */
         break;
     case 4:  /* Pixel colours */
     case 12: /* Overlay (cursor) colours */
@@ -452,7 +466,7 @@ static void tcx_dac_writel(void *opaque, hwaddr addr, uint64_t val,
 static const MemoryRegionOps tcx_dac_ops = {
     .read = tcx_dac_readl,
     .write = tcx_dac_writel,
-    .endianness = DEVICE_BIG_ENDIAN,
+    .endianness = DEVICE_NATIVE_ENDIAN,
     .valid = {
         .min_access_size = 4,
         .max_access_size = 4,
@@ -465,22 +479,59 @@ static uint64_t tcx_stip_readl(void *opaque, hwaddr addr,
     return 0;
 }
 
+/*
+ * Apply ROP-aware pixel write for the stipple/blit engines.
+ *
+ * The TCX encodes the X11 raster operation in the upper byte of the
+ * pixel value (tmpblit).  The `stip-rop` FCode property advertises
+ * this capability to the Xsun X server.  Without ROP support, cursor
+ * XOR rendering falls back to GXcopy, causing the cursor to leave
+ * ghost trails and never blink.
+ *
+ * Encoding: tmpblit bits [31:28] = 4-bit GX ROP code, bits [7:0] = pixel
+ */
+static inline void tcx_stip_rop_write(uint8_t *vram, uint8_t pixel,
+                                      uint8_t rop)
+{
+    switch (rop) {
+    case 0x0: /* GXclear */        *vram = 0; break;
+    case 0x1: /* GXand */          *vram &= pixel; break;
+    case 0x2: /* GXandReverse */   *vram = ~(*vram) & pixel; break;
+    case 0x3: /* GXcopy */         *vram = pixel; break;
+    case 0x4: /* GXandInverted */  *vram &= ~pixel; break;
+    case 0x5: /* GXnoop */         break;
+    case 0x6: /* GXxor */          *vram ^= pixel; break;
+    case 0x7: /* GXor */           *vram |= pixel; break;
+    case 0x8: /* GXnor */          *vram = ~(*vram | pixel); break;
+    case 0x9: /* GXequiv */        *vram ^= ~pixel; break;
+    case 0xa: /* GXinvert */       *vram = ~(*vram); break;
+    case 0xb: /* GXorReverse */    *vram = ~(*vram) | pixel; break;
+    case 0xc: /* GXcopyInverted */ *vram = ~pixel; break;
+    case 0xd: /* GXorInverted */   *vram |= ~pixel; break;
+    case 0xe: /* GXnand */         *vram = ~(*vram & pixel); break;
+    case 0xf: /* GXset */          *vram = 0xff; break;
+    }
+}
+
 static void tcx_stip_writel(void *opaque, hwaddr addr,
                             uint64_t val, unsigned size)
 {
     TCXState *s = opaque;
     int i;
     uint32_t col;
+    uint8_t pixel, rop;
 
     if (!(addr & 4)) {
         s->tmpblit = val;
     } else {
         addr = (addr >> 3) & 0xfffff;
+        pixel = s->tmpblit & 0xff;
+        rop = (s->tmpblit >> 28) & 0xf;
         col = cpu_to_be32(s->tmpblit);
         if (s->depth == 24) {
             for (i = 0; i < 32; i++)  {
                 if (val & 0x80000000) {
-                    s->vram[addr + i] = s->tmpblit;
+                    tcx_stip_rop_write(&s->vram[addr + i], pixel, rop);
                     s->vram24[addr + i] = col;
                 }
                 val <<= 1;
@@ -488,7 +539,7 @@ static void tcx_stip_writel(void *opaque, hwaddr addr,
         } else {
             for (i = 0; i < 32; i++)  {
                 if (val & 0x80000000) {
-                    s->vram[addr + i] = s->tmpblit;
+                    tcx_stip_rop_write(&s->vram[addr + i], pixel, rop);
                 }
                 val <<= 1;
             }
@@ -503,16 +554,19 @@ static void tcx_rstip_writel(void *opaque, hwaddr addr,
     TCXState *s = opaque;
     int i;
     uint32_t col;
+    uint8_t pixel, rop;
 
     if (!(addr & 4)) {
         s->tmpblit = val;
     } else {
         addr = (addr >> 3) & 0xfffff;
+        pixel = s->tmpblit & 0xff;
+        rop = (s->tmpblit >> 28) & 0xf;
         col = cpu_to_be32(s->tmpblit);
         if (s->depth == 24) {
             for (i = 0; i < 32; i++) {
                 if (val & 0x80000000) {
-                    s->vram[addr + i] = s->tmpblit;
+                    tcx_stip_rop_write(&s->vram[addr + i], pixel, rop);
                     s->vram24[addr + i] = col;
                     s->cplane[addr + i] = col;
                 }
@@ -521,7 +575,7 @@ static void tcx_rstip_writel(void *opaque, hwaddr addr,
         } else {
             for (i = 0; i < 32; i++)  {
                 if (val & 0x80000000) {
-                    s->vram[addr + i] = s->tmpblit;
+                    tcx_stip_rop_write(&s->vram[addr + i], pixel, rop);
                 }
                 val <<= 1;
             }
@@ -533,7 +587,7 @@ static void tcx_rstip_writel(void *opaque, hwaddr addr,
 static const MemoryRegionOps tcx_stip_ops = {
     .read = tcx_stip_readl,
     .write = tcx_stip_writel,
-    .endianness = DEVICE_BIG_ENDIAN,
+    .endianness = DEVICE_NATIVE_ENDIAN,
     .impl = {
         .min_access_size = 4,
         .max_access_size = 4,
@@ -547,7 +601,7 @@ static const MemoryRegionOps tcx_stip_ops = {
 static const MemoryRegionOps tcx_rstip_ops = {
     .read = tcx_stip_readl,
     .write = tcx_rstip_writel,
-    .endianness = DEVICE_BIG_ENDIAN,
+    .endianness = DEVICE_NATIVE_ENDIAN,
     .impl = {
         .min_access_size = 4,
         .max_access_size = 4,
@@ -633,7 +687,7 @@ static void tcx_rblit_writel(void *opaque, hwaddr addr,
 static const MemoryRegionOps tcx_blit_ops = {
     .read = tcx_blit_readl,
     .write = tcx_blit_writel,
-    .endianness = DEVICE_BIG_ENDIAN,
+    .endianness = DEVICE_NATIVE_ENDIAN,
     .impl = {
         .min_access_size = 4,
         .max_access_size = 4,
@@ -647,7 +701,7 @@ static const MemoryRegionOps tcx_blit_ops = {
 static const MemoryRegionOps tcx_rblit_ops = {
     .read = tcx_blit_readl,
     .write = tcx_rblit_writel,
-    .endianness = DEVICE_BIG_ENDIAN,
+    .endianness = DEVICE_NATIVE_ENDIAN,
     .impl = {
         .min_access_size = 4,
         .max_access_size = 4,
@@ -713,7 +767,7 @@ static void tcx_thc_writel(void *opaque, hwaddr addr,
 static const MemoryRegionOps tcx_thc_ops = {
     .read = tcx_thc_readl,
     .write = tcx_thc_writel,
-    .endianness = DEVICE_BIG_ENDIAN,
+    .endianness = DEVICE_NATIVE_ENDIAN,
     .valid = {
         .min_access_size = 4,
         .max_access_size = 4,
@@ -729,12 +783,137 @@ static uint64_t tcx_dummy_readl(void *opaque, hwaddr addr,
 static void tcx_dummy_writel(void *opaque, hwaddr addr,
                          uint64_t val, unsigned size)
 {
+    return;
 }
 
 static const MemoryRegionOps tcx_dummy_ops = {
     .read = tcx_dummy_readl,
     .write = tcx_dummy_writel,
-    .endianness = DEVICE_BIG_ENDIAN,
+    .endianness = DEVICE_NATIVE_ENDIAN,
+    .valid = {
+        .min_access_size = 4,
+        .max_access_size = 4,
+    },
+};
+
+/*
+ * BT458 DAC split-register handlers for real Sun firmware (ss4.bin).
+ *
+ * The real SS-4 TCX maps the BT458 across two SBus address ranges:
+ *   0x240000 ("dac" in FCode): palette data port at offset +4
+ *   0x280000 ("dhc" in FCode): address register at offset 0,
+ *                               command at +8, overlay at +C
+ *
+ * Stock QEMU's single DAC region at 0x200000 works for OpenBIOS but not
+ * for real Sun firmware, which never touches 0x200000.
+ */
+
+/* DAC data port at SBus 0x240000 — palette R/G/B at offset 4 */
+static uint64_t tcx_dac_data_read(void *opaque, hwaddr addr, unsigned size)
+{
+    /* Forward offset 4 reads to the main DAC handler as addr=4 */
+    if (addr == 4) {
+        return tcx_dac_readl(opaque, 4, size);
+    }
+    return 0;
+}
+
+static void tcx_dac_data_write(void *opaque, hwaddr addr, uint64_t val,
+                               unsigned size)
+{
+    TCXState *s = opaque;
+
+    /* BT458 DAC data port at SBus 0x240000.
+     * Offset 0: address register (sets palette index)
+     * Offset 4: color data (R, G, B in sequence)
+     *
+     * When the ctrl port (0x280000) set a pending address, latch it into
+     * dac_index at the start of each R/G/B triplet (dac_state == 0).
+     * This prevents ICS2572 bit-bang traffic on the shared ctrl port
+     * from corrupting the palette index mid-sequence. */
+    if (addr == 4) {
+        if (s->dac_state == 0 && s->dac_addr_dirty) {
+            s->dac_index = s->dac_addr_pending;
+            s->dac_addr_dirty = 0;
+        }
+        tcx_dac_writel(opaque, 4, val, size);
+    } else if (addr == 0) {
+        tcx_dac_writel(opaque, 0, val, size);
+    }
+}
+
+static const MemoryRegionOps tcx_dac_data_ops = {
+    .read = tcx_dac_data_read,
+    .write = tcx_dac_data_write,
+    .endianness = DEVICE_NATIVE_ENDIAN,
+    .valid = {
+        .min_access_size = 4,
+        .max_access_size = 4,
+    },
+};
+
+/* DAC control port at SBus 0x280000
+ *
+ * Real SS-4 firmware (FCode `address!`) writes the palette index here,
+ * then writes R/G/B data to 0x240004 (`dac + 4`).  However, both the
+ * firmware's `color!` word and the Solaris kernel driver sometimes write
+ * address + data to the SAME register at offset 0.  The BT458 uses
+ * dac_state to track whether the next write is an address (state 0) or
+ * color data (state 1/2/3).
+ *
+ * To handle both patterns, we route ALL offset-0 writes through the main
+ * DAC handler.  When dac_state == 0, it's an address write (case 0).
+ * When dac_state > 0, it's a color data write — we forward to case 4
+ * (pixel colours) in the main handler.
+ */
+static uint64_t tcx_dac_ctrl_read(void *opaque, hwaddr addr, unsigned size)
+{
+    if (addr == 0) {
+        /* Read back the current address register */
+        return tcx_dac_readl(opaque, 0, size);
+    }
+    if (addr == 0xC) {
+        return tcx_dac_readl(opaque, 12, size);
+    }
+    return 0;
+}
+
+static void tcx_dac_ctrl_write(void *opaque, hwaddr addr, uint64_t val,
+                               unsigned size)
+{
+    TCXState *s = opaque;
+
+    /* SBus 0x280000 serves dual purpose: BT458 address register AND
+     * ICS2572 serial clock synthesizer bit-bang interface.  On real
+     * hardware these are separate chips sharing the same SBus decode.
+     *
+     * The ICS2572 writes values like 0x00/0x04/0x08/0x0C shifted left
+     * 24 bits.  These MUST NOT corrupt the BT458 palette state.
+     *
+     * We store the address in dac_addr_pending and mark it dirty.  The
+     * actual latch into dac_index happens only when the data port at
+     * 0x240004 receives a color write (at the start of an R/G/B triplet).
+     * This way ICS2572 traffic can scribble on dac_addr_pending without
+     * corrupting ongoing palette programming. */
+    if (addr == 0) {
+        s->dac_addr_pending = val >> 24;
+        s->dac_addr_dirty = 1;
+        return;
+    }
+    if (addr == 0xC) {
+        /* Overlay colors: latch pending address if dirty */
+        if (s->dac_state == 0 && s->dac_addr_dirty) {
+            s->dac_index = s->dac_addr_pending;
+            s->dac_addr_dirty = 0;
+        }
+        tcx_dac_writel(opaque, 12, val, size);
+    }
+}
+
+static const MemoryRegionOps tcx_dac_ctrl_ops = {
+    .read = tcx_dac_ctrl_read,
+    .write = tcx_dac_ctrl_write,
+    .endianness = DEVICE_NATIVE_ENDIAN,
     .valid = {
         .min_access_size = 4,
         .max_access_size = 4,
@@ -795,15 +974,21 @@ static void tcx_initfn(Object *obj)
                           TCX_THC_NREGS);
     sysbus_init_mmio(sbd, &s->thc);
 
-    /* 11/DHC : ??? */
-    memory_region_init_io(&s->dhc, obj, &tcx_dummy_ops, s, "tcx.dhc",
-                          TCX_DHC_NREGS);
+    /* 9b/THC mirror at 0x700000 for Solaris kernel driver */
+    memory_region_init_io(&s->thc_700, obj, &tcx_thc_ops, s, "tcx.thc-700",
+                          TCX_THC_NREGS);
+    sysbus_init_mmio(sbd, &s->thc_700);
+
+    /* 11/DAC-DATA : BT458 palette data at 0x240000 (real SS-4 FCode "dac") */
+    memory_region_init_io(&s->dhc, obj, &tcx_dac_data_ops, s, "tcx.dac-data",
+                          TCX_DAC_NREGS);
     sysbus_init_mmio(sbd, &s->dhc);
 
-    /* 12/ALT : ??? */
-    memory_region_init_io(&s->alt, obj, &tcx_dummy_ops, s, "tcx.alt",
-                          TCX_ALT_NREGS);
+    /* 12/DAC-CTRL : BT458 address/overlay at 0x280000 (real SS-4 FCode "dhc") */
+    memory_region_init_io(&s->alt, obj, &tcx_dac_ctrl_ops, s, "tcx.dac-ctrl",
+                          TCX_DAC_NREGS);
     sysbus_init_mmio(sbd, &s->alt);
+
 }
 
 static void tcx_realizefn(DeviceState *dev, Error **errp)
@@ -885,7 +1070,7 @@ static const Property tcx_properties[] = {
     DEFINE_PROP_UINT16("depth",    TCXState, depth,     -1),
 };
 
-static void tcx_class_init(ObjectClass *klass, const void *data)
+static void tcx_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

@@ -401,6 +401,17 @@ static inline void set_rxint(ESCCChannelState *s)
 
 static inline void set_txint(ESCCChannelState *s)
 {
+    /* Don't generate TX interrupt if TX interrupts are disabled in WR1.
+     * On sun4m the keyboard/mouse ESCC channels (PIL 12) send commands
+     * via the data register, which triggers TX-empty.  If the Solaris zs
+     * driver hasn't enabled INTR_TXINT for that channel, firing the
+     * interrupt and setting the IVEC causes "processor level 12 onboard
+     * interrupt not serviced" because the driver can't identify the
+     * source. */
+    if (!(s->wregs[W_INTR] & INTR_TXINT)) {
+        return;
+    }
+
     s->txint = 1;
     if (!s->rxint_under_svc) {
         s->txint_under_svc = 1;
@@ -1011,6 +1022,18 @@ static void sunmouse_sync(DeviceState *dev)
     ESCCChannelState *s = (ESCCChannelState *)dev;
     int ch;
 
+    /* Don't deliver mouse events until the guest has enabled RX interrupts.
+     * Before the Solaris zs driver attaches, mouse packets trigger
+     * unserviced level-12 interrupts ("processor level 12 onboard
+     * interrupt not serviced").  The guest sets INTR_RXMODEMSK in WR1
+     * when it's ready to receive mouse data. */
+    if (!(s->wregs[W_INTR] & INTR_RXMODEMSK)) {
+        s->sunmouse_dx = 0;
+        s->sunmouse_dy = 0;
+        s->sunmouse_buttons &= ~0x80;
+        return;
+    }
+
     if (s->sunmouse_dx == 0 && s->sunmouse_dy == 0 &&
         (s->sunmouse_buttons & 0x80) == 0) {
             /* Nothing to do after button event filter */
@@ -1113,7 +1136,7 @@ static const Property escc_properties[] = {
     DEFINE_PROP_STRING("chnA-sunkbd-layout", ESCCState, chn[1].sunkbd_layout),
 };
 
-static void escc_class_init(ObjectClass *klass, const void *data)
+static void escc_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

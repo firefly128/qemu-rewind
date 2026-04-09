@@ -27,7 +27,6 @@
 #include "qapi/error.h"
 #include "qemu/datadir.h"
 #include "cpu.h"
-#include "exec/target_page.h"
 #include "hw/core/sysbus.h"
 #include "qemu/error-report.h"
 #include "qemu/timer.h"
@@ -180,6 +179,9 @@ static void nvram_save_on_stop(void *opaque, bool running, RunState state)
     for (i = 0; i < NVRAM_PERSIST_SIZE; i++) {
         buf[i] = (k->read)(nvram_persist_dev, i);
     }
+    fprintf(stderr, "[NVRAM] save-on-stop (state=%d): saving %d bytes, "
+            "cksum bytes: %02x %02x\n",
+            state, NVRAM_PERSIST_SIZE, buf[0], buf[1]);
     g_file_set_contents(nvram_persist_path, (const gchar *)buf,
                         NVRAM_PERSIST_SIZE, NULL);
 }
@@ -194,6 +196,7 @@ static void nvram_init(Nvram *nvram, uint8_t *macaddr,
     uint8_t image[NVRAM_PERSIST_SIZE];
     NvramClass *k = NVRAM_GET_CLASS(nvram);
     const char *nvram_file = getenv("QEMU_NVRAM_FILE");
+    int loaded = 0;
 
     memset(image, '\0', sizeof(image));
 
@@ -201,10 +204,20 @@ static void nvram_init(Nvram *nvram, uint8_t *macaddr,
     if (nvram_file && nvram_file[0]) {
         gchar *data = NULL;
         gsize len = 0;
+        fprintf(stderr, "[NVRAM] loading from %s\n", nvram_file);
         if (g_file_get_contents(nvram_file, &data, &len, NULL)) {
+            fprintf(stderr, "[NVRAM] file size = %lu bytes\n", (unsigned long)len);
             if (len <= sizeof(image)) {
                 memcpy(image, data, len);
+                loaded = 1;
+                fprintf(stderr, "[NVRAM] loaded OK, cksum bytes: %02x %02x\n",
+                        image[0], image[1]);
+            } else {
+                fprintf(stderr, "[NVRAM] file too large (%lu > %lu), skipping\n",
+                        (unsigned long)len, (unsigned long)sizeof(image));
             }
+        } else {
+            fprintf(stderr, "[NVRAM] file not found or unreadable\n");
         }
         g_free(data);
 
@@ -216,37 +229,43 @@ static void nvram_init(Nvram *nvram, uint8_t *macaddr,
         }
     }
 
-    /* ALWAYS write the IDPROM (16 bytes at offset 0x1FD8).
-     *
-     * On real Sun hardware the MAC address and host ID live in
-     * battery-backed NVRAM alongside the config variables.  The
-     * IDPROM is OUTSIDE the config-checksum area [0:0x800], so
-     * writing it never affects the firmware's config validation.
-     *
-     * Without a valid IDPROM (type byte == 0x01), the firmware
-     * treats the machine as having no identity and reinitializes
-     * ALL of NVRAM to factory defaults — even if the config area
-     * has a perfectly valid checksum.
-     *
-     * Because QEMU's MAC is deterministic (52:54:00:12:34:56 for
-     * the first NIC), Sun_init_header() always produces identical
-     * output, so re-writing over a previously-saved IDPROM is a
-     * harmless no-op. */
-    Sun_init_header((struct Sun_nvram *)&image[0x1fd8], macaddr,
-                    nvram_machine_id);
+    if (loaded) {
+        /* File loaded — write it verbatim to the device.
+         * The IDPROM, config variables, checksums — everything comes
+         * from the file.  We do NOT call Sun_init_header() because
+         * that would overwrite the file's IDPROM with QEMU's fake
+         * 52:54:00 MAC.  The seed file (nvram-seed.py) or a previous
+         * firmware session already has a correct IDPROM with a real
+         * Sun OUI (08:00:20). */
+        fprintf(stderr, "[NVRAM] writing %d bytes to device (verbatim from file)\n",
+                NVRAM_PERSIST_SIZE);
+        for (i = 0; i < NVRAM_PERSIST_SIZE; i++) {
+            (k->write)(nvram, i, image[i]);
+        }
+    } else {
+        /* No file — zero-fill NVRAM.  Firmware will detect bad
+         * checksum, reset config to defaults, and our save-on-stop
+         * handler persists the result for subsequent boots.
+         * We still need Sun_init_header() here as a fallback so the
+         * firmware has SOME IDPROM rather than all-zeros. */
+        fprintf(stderr, "[NVRAM] no file loaded — writing IDPROM only "
+                "(firmware will init defaults)\n");
+        Sun_init_header((struct Sun_nvram *)&image[0x1fd8], macaddr,
+                        nvram_machine_id);
+        fprintf(stderr, "[NVRAM] writing %d bytes to device\n",
+                NVRAM_PERSIST_SIZE);
+        for (i = 0; i < NVRAM_PERSIST_SIZE; i++) {
+            (k->write)(nvram, i, image[i]);
+        }
+    }
 
-    /* Config checksum: DO NOT recalculate here.
-     *
-     * When loaded from file the firmware already wrote correct
-     * checksums — touching config bytes causes rejection.
-     *
-     * When fresh (no file) the config area is all zeros; the
-     * firmware detects a bad checksum, resets config to defaults,
-     * writes its own checksum, and our save-on-stop handler
-     * persists the result for subsequent boots. */
-
-    for (i = 0; i < NVRAM_PERSIST_SIZE; i++) {
-        (k->write)(nvram, i, image[i]);
+    /* Readback verify first 2 bytes */
+    {
+        uint8_t v0 = (k->read)(nvram, 0);
+        uint8_t v1 = (k->read)(nvram, 1);
+        fprintf(stderr, "[NVRAM] readback: bytes[0,1] = %02x %02x (expected %02x %02x) %s\n",
+                v0, v1, image[0], image[1],
+                (v0 == image[0] && v1 == image[1]) ? "OK" : "MISMATCH!");
     }
 }
 
@@ -325,8 +344,7 @@ static unsigned long sun4m_load_kernel(const char *kernel_filename,
         if (kernel_size < 0)
             kernel_size = load_image_targphys(kernel_filename,
                                               KERNEL_LOAD_ADDR,
-                                              RAM_size - KERNEL_LOAD_ADDR,
-                                              NULL);
+                                              RAM_size - KERNEL_LOAD_ADDR);
         if (kernel_size < 0) {
             error_report("could not load kernel '%s'", kernel_filename);
             exit(1);
@@ -337,8 +355,7 @@ static unsigned long sun4m_load_kernel(const char *kernel_filename,
         if (initrd_filename) {
             *initrd_size = load_image_targphys(initrd_filename,
                                                INITRD_LOAD_ADDR,
-                                               RAM_size - INITRD_LOAD_ADDR,
-                                               NULL);
+                                               RAM_size - INITRD_LOAD_ADDR);
             if ((int)*initrd_size < 0) {
                 error_report("could not load initial ram disk '%s'",
                              initrd_filename);
@@ -348,9 +365,9 @@ static unsigned long sun4m_load_kernel(const char *kernel_filename,
         if (*initrd_size > 0) {
             for (i = 0; i < 64 * TARGET_PAGE_SIZE; i += TARGET_PAGE_SIZE) {
                 ptr = rom_ptr(KERNEL_LOAD_ADDR + i, 24);
-                if (ptr && ldl_be_p(ptr) == 0x48647253) { /* HdrS */
-                    stl_be_p(ptr + 16, INITRD_LOAD_ADDR);
-                    stl_be_p(ptr + 20, *initrd_size);
+                if (ptr && ldl_p(ptr) == 0x48647253) { /* HdrS */
+                    stl_p(ptr + 16, INITRD_LOAD_ADDR);
+                    stl_p(ptr + 20, *initrd_size);
                     break;
                 }
             }
@@ -583,27 +600,29 @@ static void tcx_init(hwaddr addr, qemu_irq irq, int vram_size, int width,
     sysbus_mmio_map(s, 4, addr + 0x0e000000ULL);
     /* 7/TEC : Transform Engine */
     sysbus_mmio_map(s, 5, addr + 0x00700000ULL);
-    /* 8/CMAP  : DAC */
+    /* 8/CMAP : BT458 DAC (legacy, kept at 0x200000 for OpenBIOS compat) */
     sysbus_mmio_map(s, 6, addr + 0x00200000ULL);
-    /* 9/THC : */
+    /* 9/THC : Cursor, video control at 0x300000 (firmware uses this) */
     if (depth == 8) {
         sysbus_mmio_map(s, 7, addr + 0x00300000ULL);
     } else {
         sysbus_mmio_map(s, 7, addr + 0x00301000ULL);
     }
-    /* 11/DHC : */
-    sysbus_mmio_map(s, 8, addr + 0x00240000ULL);
-    /* 12/ALT : */
-    sysbus_mmio_map(s, 9, addr + 0x00280000ULL);
+    /* 9b/THC mirror at 0x700000 (Solaris kernel driver uses this) */
+    sysbus_mmio_map(s, 8, addr + 0x00700000ULL);
+    /* 11/DAC-DATA : BT458 palette data at 0x240000 (real SS-4 FCode `dac`) */
+    sysbus_mmio_map(s, 9, addr + 0x00240000ULL);
+    /* 12/DAC-CTRL : BT458 address/overlay at 0x280000 (real SS-4 FCode `dhc`) */
+    sysbus_mmio_map(s, 10, addr + 0x00280000ULL);
     /* 0/DFB8 : 8-bit plane */
-    sysbus_mmio_map(s, 10, addr + 0x00800000ULL);
+    sysbus_mmio_map(s, 11, addr + 0x00800000ULL);
     /* 1/DFB24 : 24bit plane */
-    sysbus_mmio_map(s, 11, addr + 0x02000000ULL);
+    sysbus_mmio_map(s, 12, addr + 0x02000000ULL);
     /* 4/RDFB32: Raw framebuffer. Control plane */
-    sysbus_mmio_map(s, 12, addr + 0x0a000000ULL);
+    sysbus_mmio_map(s, 13, addr + 0x0a000000ULL);
     /* 9/THC24bits : NetBSD writes here even with 8-bit display: dummy */
     if (depth == 8) {
-        sysbus_mmio_map(s, 13, addr + 0x00301000ULL);
+        sysbus_mmio_map(s, 14, addr + 0x00301000ULL);
     }
 
     sysbus_connect_irq(s, 0, irq);
@@ -649,6 +668,9 @@ static void idreg_init(hwaddr addr)
     sysbus_realize_and_unref(s, &error_fatal);
 
     sysbus_mmio_map(s, 0, addr);
+    address_space_write_rom(&address_space_memory, addr,
+                            MEMTXATTRS_UNSPECIFIED,
+                            idreg_data, sizeof(idreg_data));
 }
 
 OBJECT_DECLARE_SIMPLE_TYPE(IDRegState, MACIO_ID_REGISTER)
@@ -659,57 +681,22 @@ struct IDRegState {
     MemoryRegion mem;
 };
 
-static uint64_t idreg_mem_read(void *opaque, hwaddr addr, unsigned size)
-{
-    static int idreg_trace_count;
-    uint64_t ret = 0;
-
-    if (addr < sizeof(idreg_data)) {
-        /* Return the appropriate bytes based on size and address */
-        for (unsigned i = 0; i < size && (addr + i) < sizeof(idreg_data); i++) {
-            ret |= (uint64_t)idreg_data[addr + i] << (8 * (size - 1 - i));
-        }
-    }
-    if (idreg_trace_count < 100) {
-        fprintf(stderr, "IDREG-RD addr=%04llx size=%u ret=%08llx\n",
-                (unsigned long long)addr, size, (unsigned long long)ret);
-        idreg_trace_count++;
-    }
-    return ret;
-}
-
-static void idreg_mem_write(void *opaque, hwaddr addr,
-                            uint64_t val, unsigned size)
-{
-    static int idreg_wr_trace_count;
-    if (idreg_wr_trace_count < 20) {
-        fprintf(stderr, "IDREG-WR addr=%04llx size=%u val=%08llx\n",
-                (unsigned long long)addr, size, (unsigned long long)val);
-        idreg_wr_trace_count++;
-    }
-}
-
-static const MemoryRegionOps idreg_mem_ops = {
-    .read = idreg_mem_read,
-    .write = idreg_mem_write,
-    .endianness = DEVICE_BIG_ENDIAN,
-    .valid = {
-        .min_access_size = 1,
-        .max_access_size = 4,
-    },
-};
-
 static void idreg_realize(DeviceState *ds, Error **errp)
 {
     IDRegState *s = MACIO_ID_REGISTER(ds);
     SysBusDevice *dev = SYS_BUS_DEVICE(ds);
 
-    memory_region_init_io(&s->mem, OBJECT(ds), &idreg_mem_ops, s,
-                          "sun4m.idreg", sizeof(idreg_data));
+    if (!memory_region_init_ram_nomigrate(&s->mem, OBJECT(ds), "sun4m.idreg",
+                                          sizeof(idreg_data), errp)) {
+        return;
+    }
+
+    vmstate_register_ram_global(&s->mem);
+    memory_region_set_readonly(&s->mem, true);
     sysbus_init_mmio(dev, &s->mem);
 }
 
-static void idreg_class_init(ObjectClass *oc, const void *data)
+static void idreg_class_init(ObjectClass *oc, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 
@@ -759,7 +746,7 @@ static void afx_realize(DeviceState *ds, Error **errp)
     sysbus_init_mmio(dev, &s->mem);
 }
 
-static void afx_class_init(ObjectClass *oc, const void *data)
+static void afx_class_init(ObjectClass *oc, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 
@@ -814,7 +801,7 @@ static void prom_init(hwaddr addr, const char *bios_name)
                        translate_prom_address, &addr, NULL,
                        NULL, NULL, NULL, ELFDATA2MSB, EM_SPARC, 0, 0);
         if (ret < 0 || ret > PROM_SIZE_MAX) {
-            ret = load_image_targphys(filename, addr, PROM_SIZE_MAX, NULL);
+            ret = load_image_targphys(filename, addr, PROM_SIZE_MAX);
         }
         g_free(filename);
     } else {
@@ -837,14 +824,11 @@ static void prom_realize(DeviceState *ds, Error **errp)
     }
 
     vmstate_register_ram_global(&s->prom);
-    /* Keep PROM writable — on real hardware the external cache (ECACHE)
-     * sits in front of the PROM and absorbs writes.  POST relies on
-     * writing page table entries and test data to PROM-space addresses
-     * and reading them back through the ECACHE. */
+    memory_region_set_readonly(&s->prom, true);
     sysbus_init_mmio(dev, &s->prom);
 }
 
-static void prom_class_init(ObjectClass *klass, const void *data)
+static void prom_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -888,7 +872,7 @@ static void ram_initfn(Object *obj)
                                     "Valid value is ID of a hostmem backend");
 }
 
-static void ram_class_init(ObjectClass *klass, const void *data)
+static void ram_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -904,8 +888,7 @@ static const TypeInfo ram_info = {
 };
 
 static void cpu_devinit(const char *cpu_type, unsigned int id,
-                        uint64_t prom_addr, qemu_irq **cpu_irqs,
-                        bool real_bios)
+                        uint64_t prom_addr, qemu_irq **cpu_irqs)
 {
     SPARCCPU *cpu;
     CPUSPARCState *env;
@@ -914,12 +897,7 @@ static void cpu_devinit(const char *cpu_type, unsigned int id,
     env = &cpu->env;
 
     qemu_register_reset(sun4m_cpu_reset, cpu);
-    /* When running a real OBP ROM (-bios), all CPUs must start
-     * simultaneously — the firmware's reset vector sorts out boot vs
-     * secondary paths based on each CPU's MID.  OpenBIOS-based boots
-     * (the default) need secondary CPUs powered off until start_cpu(). */
-    object_property_set_bool(OBJECT(cpu), "start-powered-off",
-                             real_bios ? false : (id != 0),
+    object_property_set_bool(OBJECT(cpu), "start-powered-off", id != 0,
                              &error_abort);
     qdev_realize_and_unref(DEVICE(cpu), NULL, &error_fatal);
     cpu_sparc_set_id(env, id);
@@ -930,57 +908,6 @@ static void cpu_devinit(const char *cpu_type, unsigned int id,
 static void dummy_fdc_tc(void *opaque, int irq, int level)
 {
 }
-
-/* L1 page-table descriptor overlay at PA 0x2000-0x200F.
- *
- * The OBP firmware stores its initial L1 page-table descriptors at
- * physical address 0x2000.  In SMP configurations, the SRMMU walker
- * (which reads via address_space_ldl_be) must see coherent data with
- * respect to guest CPU stores.  A plain RAM overlay at the same address
- * does not prevent Trap 0x21 crashes — only MMIO-backed ops work,
- * because the slow-path dispatch serialises store/read pairs across
- * vCPUs and guarantees that address_space_ldl_be resolves identically
- * to the TCG TLB store path. */
-uint8_t l1_ptd_backing[16];
-
-static void l1_ptd_write(void *opaque, hwaddr addr,
-                          uint64_t val, unsigned size)
-{
-    static int l1wr_count;
-    uint32_t store_value = cpu_to_be32((uint32_t)val);
-    memcpy(&l1_ptd_backing[addr & 0xf], &store_value, size);
-    if (l1wr_count < 200) {
-        fprintf(stderr, "L1-WR PA=%04llx val=%08x size=%d\n",
-                (unsigned long long)(0x2000 + (addr & 0xf)),
-                (uint32_t)val, size);
-        l1wr_count++;
-    }
-}
-
-static uint64_t l1_ptd_read(void *opaque, hwaddr addr,
-                              unsigned size)
-{
-    static int l1rd_count;
-    uint32_t raw_value;
-    memcpy(&raw_value, &l1_ptd_backing[addr & ~3], 4);
-    if (l1rd_count < 200) {
-        fprintf(stderr, "L1-RD PA=%04llx ret=%08x\n",
-                (unsigned long long)(0x2000 + (addr & ~3)),
-                be32_to_cpu(raw_value));
-        l1rd_count++;
-    }
-    return be32_to_cpu(raw_value);
-}
-
-static const MemoryRegionOps l1_ptd_ops = {
-    .read  = l1_ptd_read,
-    .write = l1_ptd_write,
-    .endianness = DEVICE_BIG_ENDIAN,
-    .valid = {
-        .min_access_size = 4,
-        .max_access_size = 4,
-    },
-};
 
 static void sun4m_hw_init(MachineState *machine)
 {
@@ -1009,10 +936,8 @@ static void sun4m_hw_init(MachineState *machine)
     }
 
     /* init CPUs */
-    bool real_bios = (machine->firmware != NULL);
     for(i = 0; i < smp_cpus; i++) {
-        cpu_devinit(machine->cpu_type, i, hwdef->slavio_base, &cpu_irqs[i],
-                    real_bios);
+        cpu_devinit(machine->cpu_type, i, hwdef->slavio_base, &cpu_irqs[i]);
     }
 
     for (i = smp_cpus; i < MAX_CPUS; i++)
@@ -1031,31 +956,6 @@ static void sun4m_hw_init(MachineState *machine)
     }
 
     prom_init(hwdef->slavio_base, machine->firmware);
-
-    /* SuperSPARC external cache (ECACHE) backing RAM.
-     *
-     * POST tests page table walks and cache coherency using physical
-     * addresses in the PROM's 16 MB L1 PTE region.  On real hardware
-     * the ECACHE SRAM responds at these addresses; provide writable RAM
-     * from PROM_SIZE_MAX up to the next device (ms_kb at +16 MB). */
-    {
-        static MemoryRegion ecache_ram;
-        memory_region_init_ram_nomigrate(&ecache_ram, NULL,
-                                         "sun4m.ecache", 15 * MiB, NULL);
-        memory_region_add_subregion(get_system_memory(),
-                                    hwdef->slavio_base + PROM_SIZE_MAX,
-                                    &ecache_ram);
-    }
-
-    /* Install L1 page-table descriptor overlay (see l1_ptd_ops). */
-    {
-        static MemoryRegion l1_ptd_region;
-        memset(l1_ptd_backing, 0, sizeof(l1_ptd_backing));
-        memory_region_init_io(&l1_ptd_region, NULL, &l1_ptd_ops,
-                              l1_ptd_backing, "sun4m.l1-ptd", 16);
-        memory_region_add_subregion_overlap(get_system_memory(), 0x2000,
-                                            &l1_ptd_region, 1);
-    }
 
     slavio_intctl = slavio_intctl_init(hwdef->intctl_base,
                                        hwdef->intctl_base + 0x10000ULL,
@@ -1091,15 +991,6 @@ static void sun4m_hw_init(MachineState *machine)
                      hwdef->esp_base, slavio_irq[18],
                      hwdef->le_base, slavio_irq[16], &hostid);
 
-    if (!graphic_width) {
-        graphic_width = 1024;
-    }
-    if (!graphic_height) {
-        graphic_height = 768;
-    }
-    if (!graphic_depth) {
-        graphic_depth = 8;
-    }
     if (graphic_depth != 8 && graphic_depth != 24) {
         error_report("Unsupported depth: %d", graphic_depth);
         exit (1);
@@ -1322,7 +1213,7 @@ static void sun4m_nmi(NMIState *n, int cpu_index, Error **errp)
     }
 }
 
-static void sun4m_machine_class_init(ObjectClass *oc, const void *data)
+static void sun4m_machine_class_init(ObjectClass *oc, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
 
@@ -1335,7 +1226,7 @@ static void sun4m_machine_class_init(ObjectClass *oc, const void *data)
     nc->nmi_monitor_handler = sun4m_nmi;
 }
 
-static void ss5_class_init(ObjectClass *oc, const void *data)
+static void ss5_class_init(ObjectClass *oc, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     Sun4mMachineClass *smc = SUN4M_MACHINE_CLASS(mc);
@@ -1372,7 +1263,7 @@ static void ss5_class_init(ObjectClass *oc, const void *data)
     smc->hwdef = &ss5_hwdef;
 }
 
-static void ss10_class_init(ObjectClass *oc, const void *data)
+static void ss10_class_init(ObjectClass *oc, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     Sun4mMachineClass *smc = SUN4M_MACHINE_CLASS(mc);
@@ -1407,7 +1298,7 @@ static void ss10_class_init(ObjectClass *oc, const void *data)
     smc->hwdef = &ss10_hwdef;
 }
 
-static void ss600mp_class_init(ObjectClass *oc, const void *data)
+static void ss600mp_class_init(ObjectClass *oc, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     Sun4mMachineClass *smc = SUN4M_MACHINE_CLASS(mc);
@@ -1440,7 +1331,7 @@ static void ss600mp_class_init(ObjectClass *oc, const void *data)
     smc->hwdef = &ss600mp_hwdef;
 }
 
-static void ss20_class_init(ObjectClass *oc, const void *data)
+static void ss20_class_init(ObjectClass *oc, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     Sun4mMachineClass *smc = SUN4M_MACHINE_CLASS(mc);
@@ -1459,6 +1350,7 @@ static void ss20_class_init(ObjectClass *oc, const void *data)
         .esp_base     = 0xef0800000ULL,
         .le_base      = 0xef0c00000ULL,
         .bpp_base     = 0xef4800000ULL,
+        .apc_base     = 0xefa000000ULL, /* XXX should not exist */
         .aux1_base    = 0xff1800000ULL,
         .aux2_base    = 0xff1a01000ULL,
         .dbri_base    = 0xee0000000ULL,
@@ -1490,7 +1382,7 @@ static void ss20_class_init(ObjectClass *oc, const void *data)
     smc->hwdef = &ss20_hwdef;
 }
 
-static void voyager_class_init(ObjectClass *oc, const void *data)
+static void voyager_class_init(ObjectClass *oc, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     Sun4mMachineClass *smc = SUN4M_MACHINE_CLASS(mc);
@@ -1522,7 +1414,7 @@ static void voyager_class_init(ObjectClass *oc, const void *data)
     smc->hwdef = &voyager_hwdef;
 }
 
-static void ss_lx_class_init(ObjectClass *oc, const void *data)
+static void ss_lx_class_init(ObjectClass *oc, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     Sun4mMachineClass *smc = SUN4M_MACHINE_CLASS(mc);
@@ -1555,7 +1447,7 @@ static void ss_lx_class_init(ObjectClass *oc, const void *data)
     smc->hwdef = &ss_lx_hwdef;
 }
 
-static void ss4_class_init(ObjectClass *oc, const void *data)
+static void ss4_class_init(ObjectClass *oc, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     Sun4mMachineClass *smc = SUN4M_MACHINE_CLASS(mc);
@@ -1589,7 +1481,7 @@ static void ss4_class_init(ObjectClass *oc, const void *data)
     smc->hwdef = &ss4_hwdef;
 }
 
-static void scls_class_init(ObjectClass *oc, const void *data)
+static void scls_class_init(ObjectClass *oc, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     Sun4mMachineClass *smc = SUN4M_MACHINE_CLASS(mc);
@@ -1621,7 +1513,7 @@ static void scls_class_init(ObjectClass *oc, const void *data)
     smc->hwdef = &scls_hwdef;
 }
 
-static void sbook_class_init(ObjectClass *oc, const void *data)
+static void sbook_class_init(ObjectClass *oc, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     Sun4mMachineClass *smc = SUN4M_MACHINE_CLASS(mc);

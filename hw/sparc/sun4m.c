@@ -52,9 +52,13 @@
 #include "hw/core/irq.h"
 #include "hw/core/or-irq.h"
 #include "hw/core/loader.h"
+#include "exec/target_page.h"
 #include "elf.h"
 #include "trace.h"
 #include "qom/object.h"
+
+/* L1 page table descriptor overlay backing (referenced by int32_helper.c) */
+uint8_t l1_ptd_backing[16];
 
 /*
  * Sun4m architecture was used in the following machines:
@@ -307,12 +311,6 @@ static void sun4m_cpu_reset(void *opaque)
     cpu_reset(cs);
 }
 
-static void cpu_halt_signal(void *opaque, int irq, int level)
-{
-    if (level && current_cpu) {
-        cpu_interrupt(current_cpu, CPU_INTERRUPT_HALT);
-    }
-}
 
 static uint64_t translate_kernel_address(void *opaque, uint64_t addr)
 {
@@ -344,7 +342,8 @@ static unsigned long sun4m_load_kernel(const char *kernel_filename,
         if (kernel_size < 0)
             kernel_size = load_image_targphys(kernel_filename,
                                               KERNEL_LOAD_ADDR,
-                                              RAM_size - KERNEL_LOAD_ADDR);
+                                              RAM_size - KERNEL_LOAD_ADDR,
+                                              NULL);
         if (kernel_size < 0) {
             error_report("could not load kernel '%s'", kernel_filename);
             exit(1);
@@ -355,7 +354,8 @@ static unsigned long sun4m_load_kernel(const char *kernel_filename,
         if (initrd_filename) {
             *initrd_size = load_image_targphys(initrd_filename,
                                                INITRD_LOAD_ADDR,
-                                               RAM_size - INITRD_LOAD_ADDR);
+                                               RAM_size - INITRD_LOAD_ADDR,
+                                               NULL);
             if ((int)*initrd_size < 0) {
                 error_report("could not load initial ram disk '%s'",
                              initrd_filename);
@@ -561,18 +561,6 @@ static void ecc_init(hwaddr base, qemu_irq irq, uint32_t version)
     }
 }
 
-static void apc_init(hwaddr power_base, qemu_irq cpu_halt)
-{
-    DeviceState *dev;
-    SysBusDevice *s;
-
-    dev = qdev_new("apc");
-    s = SYS_BUS_DEVICE(dev);
-    sysbus_realize_and_unref(s, &error_fatal);
-    /* Power management (APC) XXX: not a Slavio device */
-    sysbus_mmio_map(s, 0, power_base);
-    sysbus_connect_irq(s, 0, cpu_halt);
-}
 
 static void tcx_init(hwaddr addr, qemu_irq irq, int vram_size, int width,
                      int height, int depth)
@@ -696,7 +684,7 @@ static void idreg_realize(DeviceState *ds, Error **errp)
     sysbus_init_mmio(dev, &s->mem);
 }
 
-static void idreg_class_init(ObjectClass *oc, void *data)
+static void idreg_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 
@@ -717,6 +705,7 @@ struct AFXState {
     SysBusDevice parent_obj;
 
     MemoryRegion mem;
+    uint32_t afx_reg;
 };
 
 /* SS-5 TCX AFX register */
@@ -732,21 +721,54 @@ static void afx_init(hwaddr addr)
     sysbus_mmio_map(s, 0, addr);
 }
 
+static uint64_t afx_mem_read(void *opaque, hwaddr addr, unsigned size)
+{
+    /*
+     * The SS-4 OBP firmware audio FCode probes my-address + 0xe000000
+     * (the AFX register at 0x6e000000) via a byte read (c@) and aborts
+     * if the result is zero.  Return non-zero so the firmware continues
+     * to create the SUNW,CS4231 device node.
+     */
+    AFXState *s = opaque;
+    uint32_t value = s->afx_reg;
+
+    /* Extract the correct byte for sub-word big-endian access */
+    if (size == 1) {
+        unsigned byte_offset = addr & 3;
+        return (value >> (8 * (3 - byte_offset))) & 0xff;
+    }
+    return value;
+}
+
+static void afx_mem_write(void *opaque, hwaddr addr,
+                          uint64_t val, unsigned size)
+{
+    AFXState *s = opaque;
+    s->afx_reg = val;
+}
+
+static const MemoryRegionOps afx_mem_ops = {
+    .read = afx_mem_read,
+    .write = afx_mem_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = {
+        .min_access_size = 1,
+        .max_access_size = 4,
+    },
+};
+
 static void afx_realize(DeviceState *ds, Error **errp)
 {
     AFXState *s = TCX_AFX(ds);
     SysBusDevice *dev = SYS_BUS_DEVICE(ds);
 
-    if (!memory_region_init_ram_nomigrate(&s->mem, OBJECT(ds), "sun4m.afx",
-                                          4, errp)) {
-        return;
-    }
-
-    vmstate_register_ram_global(&s->mem);
+    s->afx_reg = 0x01000000;  /* non-zero MSB for firmware byte probe */
+    memory_region_init_io(&s->mem, OBJECT(ds), &afx_mem_ops, s,
+                          "sun4m.afx", 4);
     sysbus_init_mmio(dev, &s->mem);
 }
 
-static void afx_class_init(ObjectClass *oc, void *data)
+static void afx_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 
@@ -801,7 +823,7 @@ static void prom_init(hwaddr addr, const char *bios_name)
                        translate_prom_address, &addr, NULL,
                        NULL, NULL, NULL, ELFDATA2MSB, EM_SPARC, 0, 0);
         if (ret < 0 || ret > PROM_SIZE_MAX) {
-            ret = load_image_targphys(filename, addr, PROM_SIZE_MAX);
+            ret = load_image_targphys(filename, addr, PROM_SIZE_MAX, NULL);
         }
         g_free(filename);
     } else {
@@ -828,7 +850,7 @@ static void prom_realize(DeviceState *ds, Error **errp)
     sysbus_init_mmio(dev, &s->prom);
 }
 
-static void prom_class_init(ObjectClass *klass, void *data)
+static void prom_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -872,7 +894,7 @@ static void ram_initfn(Object *obj)
                                     "Valid value is ID of a hostmem backend");
 }
 
-static void ram_class_init(ObjectClass *klass, void *data)
+static void ram_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -921,7 +943,7 @@ static void sun4m_hw_init(MachineState *machine)
     uint32_t initrd_size;
     DriveInfo *fd[MAX_FD];
     FWCfgState *fw_cfg;
-    DeviceState *dev, *ms_kb_orgate, *serial_orgate;
+    DeviceState *dev, *ms_kb_orgate, *serial_orgate, *sbus3_orgate;
     SysBusDevice *s;
     unsigned int smp_cpus = machine->smp.cpus;
     unsigned int max_cpus = machine->smp.max_cpus;
@@ -995,6 +1017,16 @@ static void sun4m_hw_init(MachineState *machine)
         error_report("Unsupported depth: %d", graphic_depth);
         exit (1);
     }
+    /*
+     * OR gate for SBus slot 3 level 5 interrupt (slavio bit 11 → PIL 9).
+     * Shared between TCX/CG3 (display) and CS4231 (audio).
+     */
+    sbus3_orgate = qdev_new(TYPE_OR_IRQ);
+    object_property_set_int(OBJECT(sbus3_orgate), "num-lines", 2,
+                            &error_fatal);
+    qdev_realize_and_unref(sbus3_orgate, NULL, &error_fatal);
+    qdev_connect_gpio_out(sbus3_orgate, 0, slavio_irq[11]);
+
     if (vga_interface_type != VGA_NONE) {
         if (vga_interface_type == VGA_CG3) {
             if (graphic_depth != 8) {
@@ -1009,8 +1041,9 @@ static void sun4m_hw_init(MachineState *machine)
                 exit(1);
             }
 
-            /* sbus irq 5 */
-            cg3_init(hwdef->tcx_base, slavio_irq[11], 0x00200000,
+            /* sbus irq 5 — through sbus3_orgate shared with CS4231 */
+            cg3_init(hwdef->tcx_base, qdev_get_gpio_in(sbus3_orgate, 0),
+                     0x00200000,
                      graphic_width, graphic_height, graphic_depth);
             vga_interface_created = true;
         } else {
@@ -1026,7 +1059,8 @@ static void sun4m_hw_init(MachineState *machine)
                 exit(1);
             }
 
-            tcx_init(hwdef->tcx_base, slavio_irq[11], 0x00200000,
+            tcx_init(hwdef->tcx_base, qdev_get_gpio_in(sbus3_orgate, 0),
+                     0x00200000,
                      graphic_width, graphic_height, graphic_depth);
             vga_interface_created = true;
         }
@@ -1099,10 +1133,6 @@ static void sun4m_hw_init(MachineState *machine)
     sysbus_connect_irq(s, 1, qdev_get_gpio_in(serial_orgate, 1));
     qdev_connect_gpio_out(serial_orgate, 0, slavio_irq[15]);
 
-    if (hwdef->apc_base) {
-        apc_init(hwdef->apc_base, qemu_allocate_irq(cpu_halt_signal, NULL, 0));
-    }
-
     if (hwdef->fd_base) {
         /* there is zero or one floppy drive */
         memset(fd, 0, sizeof(fd));
@@ -1117,8 +1147,25 @@ static void sun4m_hw_init(MachineState *machine)
                      slavio_irq[30], fdc_tc);
 
     if (hwdef->cs_base) {
-        sysbus_create_simple("sun-CS4231", hwdef->cs_base,
-                             slavio_irq[5]);
+        Object *iommu_obj;
+
+        dev = qdev_new("sun-CS4231");
+
+        /* Link to IOMMU for DMA address translation */
+        iommu_obj = object_resolve_path_type("", TYPE_SUN4M_IOMMU, NULL);
+        if (iommu_obj) {
+            object_property_set_link(OBJECT(dev), "iommu", iommu_obj,
+                                     &error_abort);
+        }
+
+        s = SYS_BUS_DEVICE(dev);
+        sysbus_realize_and_unref(s, &error_fatal);
+
+        /* Codec + APC DMA registers at cs_base (0x40 bytes) */
+        sysbus_mmio_map(s, 0, hwdef->cs_base);
+        /* CS4231 IRQ — SBus slot 3, level 5 → slavio bit 11 → PIL 9.
+         * Shares slavio_irq[11] with TCX via the sbus3_orgate OR gate. */
+        sysbus_connect_irq(s, 0, qdev_get_gpio_in(sbus3_orgate, 1));
     }
 
     if (hwdef->dbri_base) {
@@ -1132,8 +1179,11 @@ static void sun4m_hw_init(MachineState *machine)
     }
 
     if (hwdef->bpp_base) {
-        /* parallel port */
-        create_unimplemented_device("sun-bpp", hwdef->bpp_base, 0x20);
+        /* parallel port with MIDI bit-bang decoder */
+        dev = qdev_new("sun-bpp");
+        s = SYS_BUS_DEVICE(dev);
+        sysbus_realize_and_unref(s, &error_fatal);
+        sysbus_mmio_map(s, 0, hwdef->bpp_base);
     }
 
     initrd_size = 0;
@@ -1213,7 +1263,7 @@ static void sun4m_nmi(NMIState *n, int cpu_index, Error **errp)
     }
 }
 
-static void sun4m_machine_class_init(ObjectClass *oc, void *data)
+static void sun4m_machine_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
 
@@ -1226,7 +1276,7 @@ static void sun4m_machine_class_init(ObjectClass *oc, void *data)
     nc->nmi_monitor_handler = sun4m_nmi;
 }
 
-static void ss5_class_init(ObjectClass *oc, void *data)
+static void ss5_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     Sun4mMachineClass *smc = SUN4M_MACHINE_CLASS(mc);
@@ -1263,7 +1313,7 @@ static void ss5_class_init(ObjectClass *oc, void *data)
     smc->hwdef = &ss5_hwdef;
 }
 
-static void ss10_class_init(ObjectClass *oc, void *data)
+static void ss10_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     Sun4mMachineClass *smc = SUN4M_MACHINE_CLASS(mc);
@@ -1298,7 +1348,7 @@ static void ss10_class_init(ObjectClass *oc, void *data)
     smc->hwdef = &ss10_hwdef;
 }
 
-static void ss600mp_class_init(ObjectClass *oc, void *data)
+static void ss600mp_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     Sun4mMachineClass *smc = SUN4M_MACHINE_CLASS(mc);
@@ -1331,7 +1381,7 @@ static void ss600mp_class_init(ObjectClass *oc, void *data)
     smc->hwdef = &ss600mp_hwdef;
 }
 
-static void ss20_class_init(ObjectClass *oc, void *data)
+static void ss20_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     Sun4mMachineClass *smc = SUN4M_MACHINE_CLASS(mc);
@@ -1382,7 +1432,7 @@ static void ss20_class_init(ObjectClass *oc, void *data)
     smc->hwdef = &ss20_hwdef;
 }
 
-static void voyager_class_init(ObjectClass *oc, void *data)
+static void voyager_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     Sun4mMachineClass *smc = SUN4M_MACHINE_CLASS(mc);
@@ -1414,7 +1464,7 @@ static void voyager_class_init(ObjectClass *oc, void *data)
     smc->hwdef = &voyager_hwdef;
 }
 
-static void ss_lx_class_init(ObjectClass *oc, void *data)
+static void ss_lx_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     Sun4mMachineClass *smc = SUN4M_MACHINE_CLASS(mc);
@@ -1447,7 +1497,7 @@ static void ss_lx_class_init(ObjectClass *oc, void *data)
     smc->hwdef = &ss_lx_hwdef;
 }
 
-static void ss4_class_init(ObjectClass *oc, void *data)
+static void ss4_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     Sun4mMachineClass *smc = SUN4M_MACHINE_CLASS(mc);
@@ -1466,6 +1516,7 @@ static void ss4_class_init(ObjectClass *oc, void *data)
         .dma_base     = 0x78400000,
         .esp_base     = 0x78800000,
         .le_base      = 0x78c00000,
+        .bpp_base     = 0x7c800000,
         .apc_base     = 0x6a000000,
         .afx_base     = 0x6e000000,
         .aux1_base    = 0x71900000,
@@ -1481,7 +1532,7 @@ static void ss4_class_init(ObjectClass *oc, void *data)
     smc->hwdef = &ss4_hwdef;
 }
 
-static void scls_class_init(ObjectClass *oc, void *data)
+static void scls_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     Sun4mMachineClass *smc = SUN4M_MACHINE_CLASS(mc);
@@ -1513,7 +1564,7 @@ static void scls_class_init(ObjectClass *oc, void *data)
     smc->hwdef = &scls_hwdef;
 }
 
-static void sbook_class_init(ObjectClass *oc, void *data)
+static void sbook_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     Sun4mMachineClass *smc = SUN4M_MACHINE_CLASS(mc);

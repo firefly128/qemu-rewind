@@ -1,10 +1,17 @@
 # See docs/devel/tracing.rst for syntax documentation.
 
-# cs4231.c
-cs4231_mem_readl_dreg(uint32_t reg, uint32_t ret) "read dreg %d: 0x%02x"
-cs4231_mem_readl_reg(uint32_t reg, uint32_t ret) "read reg %d: 0x%08x"
-cs4231_mem_writel_reg(uint32_t reg, uint32_t old, uint32_t val) "write reg %d: 0x%08x -> 0x%08x"
-cs4231_mem_writel_dreg(uint32_t reg, uint32_t old, uint32_t val) "write dreg %d: 0x%02x -> 0x%02x"
+# cs4231.c (sun4m CS4231 + APC DMA)
+cs4231_codec_read_dreg(uint32_t reg, uint32_t ret) "read dreg %d: 0x%02x"
+cs4231_codec_read_reg(uint32_t reg, uint32_t ret) "read reg %d: 0x%08x"
+cs4231_codec_write_reg(uint32_t reg, uint32_t old, uint32_t val) "write reg %d: 0x%08x -> 0x%08x"
+cs4231_codec_write_dreg(uint32_t reg, uint32_t old, uint32_t val) "write dreg %d: 0x%02x -> 0x%02x"
+cs4231_codec_reconfigure(int freq, int channels, int format) "reconfigure: freq=%d ch=%d fmt=%d"
+cs4231_apc_dma_read_reg(uint32_t offset, uint32_t val) "APC DMA read offset=0x%02x val=0x%08x"
+cs4231_apc_dma_write_reg(uint32_t offset, uint32_t old, uint32_t val) "APC DMA write offset=0x%02x 0x%08x -> 0x%08x"
+cs4231_dma_playback_transfer(uint32_t dvma_addr, uint32_t count) "DMA playback: dvma=0x%08x count=%u"
+cs4231_dma_playback_complete(uint32_t next_dvma, uint32_t next_count) "DMA playback complete, next: dvma=0x%08x count=%u"
+cs4231_irq_raise(uint32_t csr) "raise IRQ, CSR=0x%08x"
+cs4231_irq_lower(uint32_t csr) "lower IRQ, CSR=0x%08x"
 
 # es1370.c
 es1370_frame_address_rd(int ch, uint32_t addr) "ch=%d addr=0x%08x"

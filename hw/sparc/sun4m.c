@@ -1013,11 +1013,19 @@ static void sun4m_hw_init(MachineState *machine)
                      hwdef->esp_base, slavio_irq[18],
                      hwdef->le_base, slavio_irq[16], &hostid);
 
-    /* Default to 8bpp when no -g WxHxD specified (QEMU default behaviour
-     * before commit 5f0aff17c8 accidentally dropped it). Without this,
-     * every invocation without an explicit depth fails with
-     * "Unsupported depth: 0" before VGA_NONE has a chance to be
-     * checked — surfaced as snapshot:bare boot failure. */
+    /* Default graphic_width/height/depth when no -g WxHxD specified
+     * (QEMU default behaviour before commit 5f0aff17c8 accidentally
+     * dropped all three blocks). Without these, any invocation without
+     * an explicit -g fails with "Unsupported depth: 0" or
+     * "Unsupported resolution: 0 x 0" before the VGA_NONE check has a
+     * chance to gate on -nographic — surfaced as snapshot:bare boot
+     * failure. */
+    if (!graphic_width) {
+        graphic_width = 1024;
+    }
+    if (!graphic_height) {
+        graphic_height = 768;
+    }
     if (!graphic_depth) {
         graphic_depth = 8;
     }

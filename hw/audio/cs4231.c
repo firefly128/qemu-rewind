@@ -335,6 +335,8 @@ struct SunCS4231State {
     /* Current audio format state */
     int sample_shift;
     const int16_t *xlaw_decode_table;
+    bool input_is_16bit;            /* true for cases 2/6 (16-bit linear) */
+    int audio_byte_rate;            /* input bytes per second */
 
     /* Fade-in counter to avoid pop at playback start.
      * Counts down from FADEIN_SAMPLES; while > 0, output is
@@ -427,6 +429,7 @@ static void suncs4231_reconfigure_voice(SunCS4231State *state,
     audio_settings.nchannels = (format_register_value & (1 << 4)) ? 2 : 1;
     audio_settings.big_endian = false;
     state->xlaw_decode_table = NULL;
+    state->input_is_16bit = false;
 
     switch ((format_register_value >> 5) &
             ((state->codec_indirect_regs[CS_MODE_AND_ID] & CS_MODE2) ? 7 : 3)) {
@@ -455,12 +458,20 @@ static void suncs4231_reconfigure_voice(SunCS4231State *state,
     case 2: /* 16-bit signed, little-endian */
         audio_settings.fmt = AUDIO_FORMAT_S16;
         state->sample_shift = audio_settings.nchannels;
+        state->input_is_16bit = true;
         break;
 
     default:
         /* Reserved or ADPCM — not supported */
         return;
     }
+
+    /* True input byte rate. current_sample_rate is freq*nchannels which only
+     * equals bytes/sec for 1-byte-per-channel formats (u8, mu-law, a-law);
+     * for 16-bit linear it understates by 2x, breaking completion timing. */
+    state->audio_byte_rate = sample_frequency *
+        audio_settings.nchannels *
+        (state->input_is_16bit ? 2 : 1);
 
     trace_cs4231_codec_reconfigure(sample_frequency,
                                    audio_settings.nchannels,
@@ -603,8 +614,12 @@ static void suncs4231_pump_playback(SunCS4231State *state)
             bytes_written /= 2;
         } else {
             if (state->fadein_remaining > 0) {
-                if (state->sample_shift >= 2) {
-                    /* 16-bit stereo or mono — 2+ bytes per sample */
+                if (state->input_is_16bit) {
+                    /* 16-bit linear (mono or stereo) — 2 bytes per sample.
+                     * sample_shift alone is ambiguous: shift==1 covers both
+                     * 16-bit mono and u8 stereo, so we need an explicit flag.
+                     * Treating 16-bit BE bytes as u8 produces 0x80 0x80 =
+                     * -32640 at fade scale 0 (the boundary glitch). */
                     suncs4231_apply_fadein_s16(state,
                         (int16_t *)state->dma_read_buffer,
                         bytes_to_transfer / 2);
@@ -677,7 +692,7 @@ static void suncs4231_completion_timer_cb(void *opaque)
     if (state->playback_byte_count > 0) {
         int64_t remaining_ns = (int64_t)state->playback_byte_count *
                                NANOSECONDS_PER_SECOND /
-                               MAX(state->current_sample_rate, 1);
+                               MAX(state->audio_byte_rate, 1);
         if (remaining_ns < 1000000) {
             remaining_ns = 1000000; /* min 1ms to avoid busy-loop */
         }
@@ -703,7 +718,7 @@ static void suncs4231_completion_timer_cb(void *opaque)
         /* Schedule next completion */
         int64_t duration_ns = (int64_t)state->playback_byte_count *
                               NANOSECONDS_PER_SECOND /
-                              MAX(state->current_sample_rate, 1);
+                              MAX(state->audio_byte_rate, 1);
         timer_mod(state->completion_timer,
                   qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + duration_ns);
     } else {
@@ -731,7 +746,11 @@ static void suncs4231_start_playback(SunCS4231State *state)
     }
 
     state->playback_dma_active = true;
-    state->fadein_remaining = FADEIN_SAMPLES;
+    /* fadein is only initialized once (in suncs4231_reset). Re-arming it
+     * here would refire on every buffer-chain restart since Solaris audiocs
+     * queues the next buffer from its PI ISR (after current drains, briefly
+     * leaving dma_active=false). That produced an audible click/dip at
+     * every DMA boundary. */
     state->apc_csr &= ~APC_CSR_PM;  /* pipe no longer empty */
 
     /* Activate voice — data is ready so the synchronous callback
@@ -742,7 +761,7 @@ static void suncs4231_start_playback(SunCS4231State *state)
     /* Schedule the completion timer for the buffer duration */
     duration_ns = (int64_t)state->playback_byte_count *
                   NANOSECONDS_PER_SECOND /
-                  MAX(state->current_sample_rate, 1);
+                  MAX(state->audio_byte_rate, 1);
     timer_mod(state->completion_timer,
               qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + duration_ns);
 }
@@ -1207,8 +1226,13 @@ static void suncs4231_reset(DeviceState *device)
     /* Reset format state */
     state->sample_shift = 0;
     state->xlaw_decode_table = NULL;
+    state->input_is_16bit = false;
+    state->audio_byte_rate = 8000;
     state->aci_counter = 0;
     state->current_sample_rate = 8000;
+    /* Arm fadein once per reset to soften the first audio activation.
+     * Subsequent buffer-chain restarts must NOT refire the fadein. */
+    state->fadein_remaining = FADEIN_SAMPLES;
     timer_del(state->completion_timer);
 }
 

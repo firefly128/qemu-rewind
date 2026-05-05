@@ -1,0 +1,7 @@
+# local-dev/ holds recipes, not outputs.
+bin/
+disks/
+*.bin
+qemu-system-sparc
+qemu-system-sparc.*
+*.log
